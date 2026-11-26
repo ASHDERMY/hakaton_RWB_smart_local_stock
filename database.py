@@ -997,7 +997,7 @@ def operational_runs_df(limit=20):
         """, c, params=(int(limit),))
 
 
-def run_daily_operations(order_limit=40, simulate_incident=False):
+def run_daily_operations(order_limit=80, simulate_incident=False, destination_point_id=None):
     """Run one persisted demo work shift using current stock, routing rules and order lifecycle."""
     from datetime import datetime
     import uuid
@@ -1022,16 +1022,30 @@ def run_daily_operations(order_limit=40, simulate_incident=False):
     if stock.empty:
         raise ValueError("На Anchor нет доступного запаса. Сначала пополните локальный склад.")
     stock = stock.merge(products[["id", "SKU", "Объём, л"]], on="SKU", how="inner")
+    if destination_point_id is not None:
+        destinations = destinations[destinations["id"] == int(destination_point_id)]
+        if destinations.empty:
+            raise ValueError("Выбранный ПВЗ назначения не найден или неактивен.")
+    # The normal order engine chooses the first Anchor in the destination city.
+    # Keep the simulation on that same Anchor so the stock preview matches actual routing.
+    destination_city = destinations.iloc[0]["Город"]
+    matching_anchors = anchors[anchors["Город"] == destination_city]
+    chosen_anchor = (matching_anchors.iloc[0] if not matching_anchors.empty else anchors.iloc[0])
+    stock = stock[stock["ПВЗ"] == chosen_anchor["Название"]]
+    if stock.empty:
+        raise ValueError(f"На Anchor «{chosen_anchor['Название']}» нет доступного запаса.")
+    stock = stock.merge(products[["id", "SKU", "Объём, л"]], on="SKU", how="inner")
     destination_ids = destinations["id"].astype(int).tolist()
+    destination_id = destination_ids[0]
     prefix = "SHIFT-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4].upper()
 
     created_codes = []
     failed = 0
     candidate_rows = stock.to_dict("records")
-    # Spread orders across SKUs and destination points while respecting live stock.
+    # Concentrate the demo shift on one selected PВЗ so a full batch can be demonstrated.
+    # Rotate SKUs while respecting the actual available stock on the Anchor.
     for number in range(1, order_limit + 1):
         row = candidate_rows[(number - 1) % len(candidate_rows)]
-        destination_id = destination_ids[(number - 1) % len(destination_ids)]
         code = f"{prefix}-{number:04d}"
         try:
             create_order(code, int(row["id"]), destination_id, 1, settings)
