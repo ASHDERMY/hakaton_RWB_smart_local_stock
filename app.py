@@ -117,7 +117,7 @@ elif page=="Заказы":
             with st.form("status_form"):
                 selected=st.selectbox("Заказ",candidates["Заказ"].tolist())
                 row=candidates[candidates["Заказ"]==selected].iloc[0]
-                allowed={"Зарезервирован":["В пути","Отменён"],"В пути":["Готов к выдаче","Ошибка"],"Ошибка":["В пути","Отменён"],"Готов к выдаче":["Выдан","Возврат оформлен"]}
+                allowed={"Зарезервирован":["В пути","Отменён"],"В пути":["Готов к выдаче","Ошибка"],"Ошибка":["В пути"],"Готов к выдаче":["Выдан","Возврат оформлен"]}
                 next_status=st.selectbox("Следующий статус",allowed[row["Статус"]])
                 change=st.form_submit_button("Изменить статус")
                 if change: show_error(lambda:update_order_status(int(row["id"]),next_status))
