@@ -879,7 +879,7 @@ elif page=="Финансы":
 
     max_fee = break_even_anchor_fee(
         orders_per_month=monthly_orders, anchors=anchors, batch_orders=batch_orders,
-        max_orders=int(forecast_cfg["max_orders"]), avg_order_volume_l=4.0, max_volume_l=float(forecast_cfg["max_volume_l"]),
+        max_orders=int(forecast_cfg["max_orders"]), avg_order_volume_l=avg_order_volume, max_volume_l=float(forecast_cfg["max_volume_l"]),
         trip_cost=trip_cost, hub_cost_per_order=hub_cost, variable_cost=variable,
         replenishment_per_order=replenishment, storage_per_order=storage,
         handling_per_order=handling, return_rate_pct=return_rate, return_cost=return_cost,
@@ -903,7 +903,7 @@ elif page=="Финансы":
     for target in (80, 100, 130):
         test = forecast_financials(
             monthly_orders=monthly_orders, mesh_share_pct=mesh_share, anchors=anchors,
-            batch_orders=target, max_orders=130, avg_order_volume_l=4.0, max_volume_l=1500,
+            batch_orders=target, max_orders=int(forecast_cfg["max_orders"]), avg_order_volume_l=avg_order_volume, max_volume_l=float(forecast_cfg["max_volume_l"]),
             trip_cost=trip_cost, hub_cost_per_order=hub_cost, variable_cost=variable,
             anchor_fee=anchor_fee, replenishment_per_order=replenishment,
             storage_per_order=storage, handling_per_order=handling,
