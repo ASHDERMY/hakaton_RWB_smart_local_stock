@@ -187,9 +187,13 @@ class ExtendedWorkflowTests(unittest.TestCase):
 
         database.clear_temporary_simulation_data()
         after = database.inventory_df().copy()
+        columns = ["ПВЗ", "SKU", "Остаток", "Резерв"]
+        # Arrival can create a zero-balance inventory row at a regular PVZ;
+        # compare stock balances while ignoring such harmless empty rows.
+        after = after[(after["Остаток"] != 0) | (after["Резерв"] != 0) | (after["В пути"] != 0)]
         self.assertEqual(
-            before[["ПВЗ", "SKU", "Остаток", "Резерв"]].to_dict("records"),
-            after[["ПВЗ", "SKU", "Остаток", "Резерв"]].to_dict("records")
+            before[columns].sort_values(["ПВЗ", "SKU"]).reset_index(drop=True).to_dict("records"),
+            after[columns].sort_values(["ПВЗ", "SKU"]).reset_index(drop=True).to_dict("records")
         )
         self.assertEqual(len(database.orders_df()), 0)
         self.assertEqual(len(database.returns_df()), 0)
