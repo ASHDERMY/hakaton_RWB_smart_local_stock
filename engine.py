@@ -89,17 +89,32 @@ def evaluate_batch(
     }
 
 
-def calculate_costs(total_orders, mesh_orders, hub_orders, hub_cost_per_order, trip_cost, trips, mesh_variable_cost_per_order, smart_cost):
+def calculate_costs(total_orders, mesh_orders, hub_orders, hub_cost_per_order, trip_cost, trips,
+                    mesh_variable_cost_per_order, smart_cost, anchor_fee_per_order=0.0,
+                    replenishment_per_order=0.0, storage_per_order=0.0,
+                    handling_per_order=0.0, risk_per_order=0.0):
+    """Legacy aggregate calculator with optional full Mesh operating-cost components."""
     baseline = total_orders * hub_cost_per_order
     trip_total = trips * trip_cost
     variable = mesh_orders * mesh_variable_cost_per_order
+    anchor = mesh_orders * anchor_fee_per_order
+    replenishment = mesh_orders * replenishment_per_order
+    storage = mesh_orders * storage_per_order
+    handling = mesh_orders * handling_per_order
+    risk = mesh_orders * risk_per_order
     hub = hub_orders * hub_cost_per_order
-    total = trip_total + variable + hub + smart_cost
+    total = trip_total + variable + anchor + replenishment + storage + handling + risk + hub + smart_cost
     return {
         "hub_baseline": baseline,
         "trip_total": trip_total,
         "mesh_variable_total": variable,
+        "anchor_fee_total": anchor,
+        "replenishment_total": replenishment,
+        "storage_total": storage,
+        "handling_total": handling,
+        "risk_total": risk,
         "hub_total": hub,
+        "smart_cost": smart_cost,
         "combined_total": total,
         "savings": baseline - total,
     }
