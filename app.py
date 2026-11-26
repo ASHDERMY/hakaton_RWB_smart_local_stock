@@ -30,11 +30,11 @@ def show_error(fn):
         return None
 
 st.title("📦 Smart Local Stock")
-st.caption("Система локального хранения, учёта заказов и выбора маршрута Hub / Mesh")
+st.caption("Локальный запас → консолидация → выбор Mesh или Hub → доставка в ПВЗ → выдача. Расчётные тарифы помечены как гипотезы.")
 with st.sidebar:
     page=st.radio("Рабочие разделы",[
         "Панель управления","Карта логистики","Товары и ПВЗ","Склад и приёмка","Заказы","Партии Mesh","Возвраты",
-        "Инциденты","Финансы","Настройки модели","Журнал операций"
+        "Инциденты","Экономика участников","Финансы","Настройки модели","Журнал операций"
     ])
     st.divider()
     if st.button("Загрузить демонстрационные данные",use_container_width=True):
@@ -284,6 +284,85 @@ elif page=="Инциденты":
     inc=incidents_df()
     if inc.empty: st.info("Инцидентов пока нет.")
     else: st.dataframe(inc,use_container_width=True,hide_index=True)
+
+
+elif page=="Экономика участников":
+    st.subheader("Экономика четырёх сторон")
+    st.caption("Сценарный калькулятор на один заказ. Это гипотезы для проверки бизнес-модели, а не действующие тарифы Wildberries.")
+
+    cfg = settings_values()
+    n1, n2, n3 = st.columns(3)
+    with n1:
+        trip_cost = st.number_input("Рейс Anchor → ПВЗ, ₽", min_value=0.0, value=float(cfg["local_trip_cost"]), step=100.0, key="stake_trip")
+        batch_n = st.number_input("Заказов в партии", min_value=1, max_value=int(cfg["max_orders"]), value=min(80, int(cfg["max_orders"])), key="stake_batch")
+    with n2:
+        hub_cost = st.number_input("Сравнительная стоимость Hub, ₽/заказ", min_value=0.0, value=float(cfg["hub_cost_per_order"]), step=1.0, key="stake_hub")
+        variable = st.number_input("Переменные Mesh, ₽/заказ", min_value=0.0, value=float(cfg["mesh_variable_cost"]), step=0.5, key="stake_var")
+    with n3:
+        pvz_reward = st.number_input("Вознаграждение ПВЗ за операции, ₽/заказ", min_value=0.0, value=18.0, step=1.0, key="stake_pvz")
+        storage_cost = st.number_input("Прочие расходы сети, ₽/заказ", min_value=0.0, value=5.0, step=0.5, key="stake_storage")
+
+    mesh_transport = trip_cost / batch_n + variable
+    marketplace_delta = hub_cost - mesh_transport - pvz_reward - storage_cost
+    p1, p2, p3 = st.columns(3)
+    p1.metric("Mesh транспорт на заказ", f"{mesh_transport:,.2f} ₽")
+    p2.metric("Hub сравнение", f"{hub_cost:,.2f} ₽")
+    p3.metric("Эффект маркетплейса", f"{marketplace_delta:+,.2f} ₽/заказ",
+              delta="положительный" if marketplace_delta >= 0 else "отрицательный",
+              delta_color="normal" if marketplace_delta >= 0 else "inverse")
+
+    st.divider()
+    st.markdown("#### Доходность ПВЗ")
+    r1, r2, r3, r4 = st.columns(4)
+    with r1:
+        receiving_fee = st.number_input("Приёмка, ₽", min_value=0.0, value=3.0, step=0.5, key="stake_receive")
+    with r2:
+        storage_fee = st.number_input("Хранение, ₽/день", min_value=0.0, value=1.0, step=0.5, key="stake_storage_fee")
+    with r3:
+        storage_days = st.number_input("Дней хранения", min_value=0.0, value=2.0, step=1.0, key="stake_days")
+    with r4:
+        picking_fee = st.number_input("Сборка и выдача, ₽", min_value=0.0, value=10.0, step=1.0, key="stake_pick")
+    pvz_income = receiving_fee + storage_fee * storage_days + picking_fee
+    st.metric("Начисление ПВЗ за заказ", f"{pvz_income:,.2f} ₽")
+    st.caption("Чистая прибыль ПВЗ = начисление минус труд, площадь, упаковка и потери. Эти расходы необходимо уточнить пилотом.")
+
+    st.divider()
+    st.markdown("#### Экономика продавца")
+    s1, s2, s3, s4 = st.columns(4)
+    with s1:
+        sale_price = st.number_input("Цена продажи, ₽", min_value=0.0, value=1500.0, step=50.0, key="stake_sale")
+    with s2:
+        purchase_cost = st.number_input("Себестоимость товара, ₽", min_value=0.0, value=700.0, step=50.0, key="stake_purchase")
+    with s3:
+        commission_pct = st.number_input("Комиссия маркетплейса, %", min_value=0.0, max_value=100.0, value=15.0, step=1.0, key="stake_commission")
+    with s4:
+        seller_logistics = st.number_input("Логистика продавца, ₽", min_value=0.0, value=50.0, step=5.0, key="stake_seller_log")
+    seller_profit = sale_price - purchase_cost - sale_price * commission_pct / 100 - seller_logistics
+    st.metric("Расчётная прибыль продавца", f"{seller_profit:,.2f} ₽/заказ",
+              delta="прибыль" if seller_profit >= 0 else "убыток",
+              delta_color="normal" if seller_profit >= 0 else "inverse")
+
+    st.divider()
+    st.markdown("#### Условия для покупателя")
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        buyer_price_hub = st.number_input("Цена доставки через Hub, ₽", min_value=0.0, value=99.0, step=5.0, key="stake_buyer_hub")
+    with b2:
+        buyer_price_mesh = st.number_input("Цена доставки Mesh, ₽", min_value=0.0, value=99.0, step=5.0, key="stake_buyer_mesh")
+    with b3:
+        eta_difference = st.number_input("Изменение срока Mesh к Hub, часов", value=-4.0, step=1.0, key="stake_eta")
+    st.metric("Изменение цены для покупателя", f"{buyer_price_mesh - buyer_price_hub:+,.2f} ₽")
+    if buyer_price_mesh <= buyer_price_hub and eta_difference <= 0:
+        st.success("В этом сценарии цена покупателя не выросла, а срок не ухудшился.")
+    else:
+        st.warning("Сценарий ухудшает хотя бы одно условие покупателя. Проверь тариф или SLA.")
+
+    st.markdown("#### Итоговое решение")
+    if marketplace_delta >= 0 and seller_profit >= 0 and buyer_price_mesh <= buyer_price_hub and eta_difference <= 0:
+        st.success("Сценарий проходит заданные ограничения. Дополнительно проверь расходы ПВЗ, возвраты и риски хранения.")
+    else:
+        st.warning("Сценарий пока не проходит все ограничения. Следует оставить Hub или изменить загрузку/тарифы.")
+    st.code("C_Mesh = C_trip / N_batch + C_variable\nDelta_Marketplace = C_Hub - C_Mesh - Reward_PVZ - Other_Costs\nProfit_Seller = Price - COGS - Commission - Seller_Logistics\nIncome_PVZ = Receiving + Storage * Days + Picking", language="text")
 
 elif page=="Финансы":
     st.subheader("Фактическая модель по зарегистрированным заказам")
