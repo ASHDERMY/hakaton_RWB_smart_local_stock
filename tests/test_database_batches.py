@@ -13,6 +13,10 @@ class MeshBatchDatabaseTests(unittest.TestCase):
         database.DB_PATH = Path(self.temp_dir.name) / "data" / "test_smart_local_stock.db"
         database.init_db()
         database.seed_demo()
+        # Keep legacy lifecycle tests focused on stock/status transitions.
+        # Full-cost routing is covered explicitly by financial-model tests.
+        for key in ("anchor_fee_per_order", "replenishment_per_order", "storage_per_order", "monthly_system_cost"):
+            database.save_setting(key, 0)
         self.settings = {key: float(item["value"]) for key, item in database.settings_dict().items()}
 
     def tearDown(self):
