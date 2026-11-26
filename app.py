@@ -117,12 +117,12 @@ elif page=="Заказы":
     if od.empty: st.info("Заказов пока нет.")
     else:
         st.dataframe(od,use_container_width=True,hide_index=True)
-        candidates=od[od["Статус"].isin(["Зарезервирован","В пути","Готов к выдаче","Ошибка"])]
+        candidates=od[od["Статус"].isin(["Ожидает партии","Зарезервирован","В пути","Готов к выдаче","Ошибка"])]
         if not candidates.empty:
             with st.form("status_form"):
                 selected=st.selectbox("Заказ",candidates["Заказ"].tolist())
                 row=candidates[candidates["Заказ"]==selected].iloc[0]
-                allowed={"Зарезервирован":["В пути","Отменён"],"В пути":["Готов к выдаче","Ошибка"],"Ошибка":["В пути"],"Готов к выдаче":["Выдан","Возврат оформлен"]}
+                allowed={"Ожидает партии":["Отменён"],"Зарезервирован":["В пути","Отменён"],"В пути":["Готов к выдаче","Ошибка"],"Ошибка":["В пути"],"Готов к выдаче":["Выдан","Возврат оформлен"]}
                 next_status=st.selectbox("Следующий статус",allowed[row["Статус"]])
                 change=st.form_submit_button("Изменить статус")
                 if change: show_error(lambda:update_order_status(int(row["id"]),next_status))
