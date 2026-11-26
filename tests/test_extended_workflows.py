@@ -207,10 +207,11 @@ class ExtendedWorkflowTests(unittest.TestCase):
         database.save_setting("storage_per_order", 2.5)
         database.save_setting("monthly_system_cost", 10000.0)
         database.save_setting("monthly_orders_forecast", 1200.0)
+        route_settings = {key: float(item["value"]) for key, item in database.settings_dict().items()}
         destination = database.points_df()
         destination_id = int(destination[destination["Название"] == "ПВЗ Север"].iloc[0]["id"])
         for number in range(1, 81):
-            database.create_order(f"FULLCOST-{number:03d}", 1, destination_id, 1, self.settings)
+            database.create_order(f"FULLCOST-{number:03d}", 1, destination_id, 1, route_settings)
         with database.db() as conn:
             batch = conn.execute(
                 "SELECT status FROM mesh_batches ORDER BY id DESC LIMIT 1"
