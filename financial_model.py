@@ -77,9 +77,11 @@ def forecast_financials(
             mesh = calculate_mesh_unit_cost(
                 mesh_orders, trips, trip_cost, variable_cost, anchor_fee,
                 replenishment_per_order, storage_per_order, handling_per_order,
-                risk_per_order, monthly_system_cost / max(mesh_orders, 1),
+                risk_per_order, monthly_system_cost / max(demand, 1),
             )
-            mesh_total = mesh["total_cost"]
+            # The system serves the whole deployed network, including Hub-routed orders.
+            # Allocate its cost over all monthly orders, then add the full fixed cost once.
+            mesh_total = mesh["total_cost"] + float(monthly_system_cost) * (1.0 - share)
             system_total = float(monthly_system_cost)
         else:
             trips = 0
@@ -162,5 +164,5 @@ def break_even_anchor_fee(
     return (
         float(hub_cost_per_order) - transport - float(variable_cost)
         - float(replenishment_per_order) - float(storage_per_order)
-        - float(handling_per_order) - risk - float(monthly_system_cost) / mesh_orders
+        - float(handling_per_order) - risk - float(monthly_system_cost) / demand
     )
