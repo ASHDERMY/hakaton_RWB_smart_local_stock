@@ -1,24 +1,103 @@
 from math import ceil, floor
 
+
 def replenishment_qty(current, incoming, reserved, daily_demand, lead_time_days, safety_stock):
-    available=max(0,current+incoming-reserved)
-    target=max(0,ceil(daily_demand*lead_time_days)+safety_stock)
-    return max(0,target-available)
+    available = max(0, current + incoming - reserved)
+    target = max(0, ceil(daily_demand * lead_time_days) + safety_stock)
+    return max(0, target - available)
+
 
 def choose_route(stock_available, sla_ok, batch_orders, batch_volume_l, trip_cost, max_orders, max_volume_l, hub_cost_per_order):
-    if batch_orders<=0: return {"route":"Hub","reason":"Партия пуста","mesh_cost_per_order":float("inf")}
-    mesh=trip_cost/batch_orders
-    if not stock_available: reason="Нет доступного товара в Anchor"
-    elif not sla_ok: reason="Mesh не укладывается в допустимый срок"
-    elif batch_orders>max_orders or batch_volume_l>max_volume_l: reason="Превышена вместимость рейса"
-    elif mesh>=hub_cost_per_order: reason="Mesh не дешевле Hub при текущей загрузке"
-    else: return {"route":"Mesh","reason":"Ограничения соблюдены, Mesh дешевле Hub","mesh_cost_per_order":mesh}
-    return {"route":"Hub","reason":reason,"mesh_cost_per_order":mesh}
+    """Legacy single-call route estimator retained for compatibility with v0.1 tests."""
+    if batch_orders <= 0:
+        return {"route": "Hub", "reason": "Партия пуста", "mesh_cost_per_order": float("inf")}
+    mesh = trip_cost / batch_orders
+    if not stock_available:
+        reason = "Нет доступного товара в Anchor"
+    elif not sla_ok:
+        reason = "Mesh не укладывается в допустимый срок"
+    elif batch_orders > max_orders or batch_volume_l > max_volume_l:
+        reason = "Превышена вместимость рейса"
+    elif mesh >= hub_cost_per_order:
+        reason = "Mesh не дешевле Hub при текущей загрузке"
+    else:
+        return {"route": "Mesh", "reason": "Ограничения соблюдены, Mesh дешевле Hub", "mesh_cost_per_order": mesh}
+    return {"route": "Hub", "reason": reason, "mesh_cost_per_order": mesh}
+
+
+def evaluate_batch(
+    order_count,
+    total_volume_l,
+    age_hours,
+    trip_cost,
+    mesh_variable_cost_per_order,
+    hub_cost_per_order,
+    target_orders,
+    max_orders,
+    max_volume_l,
+    max_wait_hours,
+):
+    """
+    Decide whether a real accumulated Anchor -> ordinary pickup point batch
+    should wait, travel by Mesh, or fall back to Hub.
+
+    The trip cost is allocated across customer orders, not item units.
+    """
+    if order_count <= 0:
+        return {"decision": "empty", "reason": "В партии нет активных заказов."}
+
+    if order_count > max_orders or total_volume_l > max_volume_l:
+        return {
+            "decision": "capacity_error",
+            "reason": "Партия превышает установленную вместимость и не может быть отправлена.",
+        }
+
+    target_reached = order_count >= min(max(1, target_orders), max_orders)
+    capacity_reached = order_count >= max_orders or total_volume_l >= max_volume_l
+    timeout_reached = age_hours >= max_wait_hours
+
+    if not (target_reached or capacity_reached or timeout_reached):
+        return {
+            "decision": "wait",
+            "reason": "Ожидание накопления партии: целевой объём ещё не достигнут, лимит времени не истёк.",
+        }
+
+    mesh_cost_per_order = trip_cost / order_count + mesh_variable_cost_per_order
+    if mesh_cost_per_order < hub_cost_per_order:
+        trigger = (
+            "Достигнута целевая загрузка партии."
+            if target_reached
+            else "Достигнут предел вместимости."
+            if capacity_reached
+            else "Истекло максимальное время ожидания; Mesh дешевле Hub."
+        )
+        return {
+            "decision": "mesh",
+            "reason": f"{trigger} Полная расчётная стоимость Mesh ниже Hub.",
+            "mesh_cost_per_order": mesh_cost_per_order,
+        }
+
+    return {
+        "decision": "hub",
+        "reason": (
+            "После достижения условия отправки Mesh не дешевле Hub "
+            f"({mesh_cost_per_order:.2f} ₽ против {hub_cost_per_order:.2f} ₽ на заказ)."
+        ),
+        "mesh_cost_per_order": mesh_cost_per_order,
+    }
+
 
 def calculate_costs(total_orders, mesh_orders, hub_orders, hub_cost_per_order, trip_cost, trips, mesh_variable_cost_per_order, smart_cost):
-    baseline=total_orders*hub_cost_per_order
-    trip_total=trips*trip_cost
-    variable=mesh_orders*mesh_variable_cost_per_order
-    hub=hub_orders*hub_cost_per_order
-    total=trip_total+variable+hub+smart_cost
-    return {"hub_baseline":baseline,"trip_total":trip_total,"mesh_variable_total":variable,"hub_total":hub,"combined_total":total,"savings":baseline-total}
+    baseline = total_orders * hub_cost_per_order
+    trip_total = trips * trip_cost
+    variable = mesh_orders * mesh_variable_cost_per_order
+    hub = hub_orders * hub_cost_per_order
+    total = trip_total + variable + hub + smart_cost
+    return {
+        "hub_baseline": baseline,
+        "trip_total": trip_total,
+        "mesh_variable_total": variable,
+        "hub_total": hub,
+        "combined_total": total,
+        "savings": baseline - total,
+    }
