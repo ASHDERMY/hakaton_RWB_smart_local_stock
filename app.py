@@ -872,7 +872,7 @@ elif page=="Финансы":
         trip_cost=trip_cost, hub_cost_per_order=hub_cost, variable_cost=variable,
         replenishment_per_order=replenishment, storage_per_order=storage,
         handling_per_order=handling, return_rate_pct=return_rate, return_cost=return_cost,
-        monthly_system_cost=monthly_system,
+        monthly_system_cost=monthly_system, mesh_share_pct=mesh_share,
     )
     st.metric("Максимальная безубыточная доплата Anchor", f"{max_fee:,.2f} ₽/заказ",
               help="Это верхняя граница при текущих остальных допущениях. Если значение отрицательное, даже нулевая доплата не делает Mesh выгоднее Hub.")
