@@ -928,11 +928,12 @@ def receive_supplier_delivery(delivery_id):
 
 
 def finance_summary():
+    """Order-level estimated costs across the whole database; excludes unbooked batch-trip projections."""
     with db() as c:
         return dict(c.execute("""SELECT COUNT(*) AS orders_count,
         COALESCE(SUM(estimated_cost),0) AS estimated_cost,
-        COALESCE(SUM(CASE WHEN route='Mesh' THEN 1 ELSE 0 END),0) AS mesh_orders,
-        COALESCE(SUM(CASE WHEN route='Hub' THEN 1 ELSE 0 END),0) AS hub_orders
+        COALESCE(SUM(CASE WHEN route LIKE 'Mesh%' THEN 1 ELSE 0 END),0) AS mesh_orders,
+        COALESCE(SUM(CASE WHEN route LIKE 'Hub%' THEN 1 ELSE 0 END),0) AS hub_orders
         FROM orders WHERE status!='Отменён'""").fetchone())
 
 
@@ -1419,26 +1420,30 @@ def continuous_simulation_tick():
     _auto_supplier_and_anchor_replenishment(tick_no,shift_code)
     _advance_supply_transports(shift_code,tick_no)
 
-    # Generate one order per tick; the regular order engine decides Mesh vs Hub.
-    created_id=None
-    points=points_df()
-    destinations=points[(points["Тип"]=="Обычный") & (points["Активен"]==1)]
-    products=products_df()
-    if not destinations.empty and not products.empty:
-        destination=destinations.sample(1).iloc[0]
-        product=products.sample(1).iloc[0]
-        code=f"{shift_code}-O-{tick_no:05d}"
+    # Generate one order every 4 seconds (one order per two 2-second ticks).
+    # Keep a destination stable for one target-sized block so Mesh orders can consolidate
+    # into a batch instead of being scattered across every demo pickup point.
+    if tick_no % 2 == 1:
+        points=points_df()
+        destinations=points[(points["Тип"]=="Обычный") & (points["Активен"]==1)].sort_values("id")
+        products=products_df()
         settings={k:float(v["value"]) for k,v in settings_dict().items()}
-        try:
-            create_order(code,int(product["id"]),int(destination["id"]),1,settings)
-            with db() as c:
-                created_id=c.execute("SELECT id FROM orders WHERE order_code=?",(code,)).fetchone()["id"]
-                _simulation_event(c,shift_code,tick_no,"Новый заказ",
-                                  f"Создан заказ {code}; маршрут определён правилами Mesh/Hub",created_id)
-        except ValueError as exc:
-            with db() as c:
-                _simulation_event(c,shift_code,tick_no,"Дефицит запаса",
-                                  f"Заказ не создан: {str(exc)[:180]}")
+        if not destinations.empty and not products.empty:
+            destination_index=_simulation_destination_index(
+                tick_no,len(destinations),int(settings["batch_target_orders"]),order_interval_ticks=2)
+            destination=destinations.iloc[destination_index]
+            product=products.sample(1).iloc[0]
+            code=f"{shift_code}-O-{tick_no:05d}"
+            try:
+                create_order(code,int(product["id"]),int(destination["id"]),1,settings)
+                with db() as c:
+                    created_id=c.execute("SELECT id FROM orders WHERE order_code=?",(code,)).fetchone()["id"]
+                    _simulation_event(c,shift_code,tick_no,"Новый заказ",
+                                      f"Создан заказ {code} для консолидации в {destination['Название']}; маршрут определён правилами Mesh/Hub",created_id)
+            except ValueError as exc:
+                with db() as c:
+                    _simulation_event(c,shift_code,tick_no,"Дефицит запаса",
+                                      f"Заказ не создан: {str(exc)[:180]}")
     process_mesh_batches()
 
     # Dispatch Hub reservations; Mesh batches are dispatched by their own evaluator.
@@ -1454,7 +1459,7 @@ def continuous_simulation_tick():
     # Move all in-transit orders on a short visual route timeline.
     with db() as c:
         moving=c.execute("""SELECT id,order_code,route FROM orders
-            WHERE status='В пути' AND order_code LIKE ? ORDER BY id LIMIT 60""",(f"{shift_code}-%",)).fetchall()
+            WHERE status='В пути' AND order_code LIKE ? ORDER BY id""",(f"{shift_code}-%",)).fetchall()
     for order in moving:
         with db() as c:
             c.execute("INSERT OR IGNORE INTO simulation_vehicle_progress(order_id,progress) VALUES(?,0)",(order["id"],))
@@ -1524,54 +1529,120 @@ def continuous_simulation_tick():
         }
 
 
+def _simulation_destination_index(tick_no, destination_count, batch_target_orders, order_interval_ticks=2):
+    """Keep orders for one destination together long enough to form a demonstrable batch."""
+    if destination_count <= 0:
+        return None
+    interval = max(1, int(order_interval_ticks))
+    target = max(1, int(batch_target_orders))
+    generated_order_slot = max(0, (int(tick_no) - 1) // interval)
+    return (generated_order_slot // target) % int(destination_count)
+
+
+def simulation_shift_snapshot():
+    """Counts for the active shift only; global network counters live in operational_snapshot()."""
+    with db() as c:
+        state = c.execute("SELECT shift_code FROM simulation_control WHERE id=1").fetchone()
+        code = state["shift_code"] if state else None
+        if not code:
+            return {"shift_code":None,"total_orders":0,"status_counts":{},
+                    "mesh_waiting_orders":0,"mesh_in_transit_orders":0,
+                    "mesh_ready_orders":0,"mesh_blocked_orders":0,"mesh_blocked_batches":0}
+        rows = c.execute("""SELECT status,COUNT(*) AS n FROM orders
+            WHERE order_code LIKE ? GROUP BY status""", (f"{code}-%",)).fetchall()
+        status_counts = {row["status"]:int(row["n"]) for row in rows}
+        batch_rows = c.execute("""SELECT
+            SUM(CASE WHEN b.status='blocked_hub_stock' THEN 1 ELSE 0 END) AS blocked_batches
+            FROM mesh_batches b WHERE b.id IN (
+                SELECT DISTINCT batch_id FROM orders
+                WHERE order_code LIKE ? AND batch_id IS NOT NULL
+            )""", (f"{code}-%",)).fetchone()
+        blocked_orders = c.execute("""SELECT COUNT(*) AS n FROM orders o
+            JOIN mesh_batches b ON b.id=o.batch_id
+            WHERE o.order_code LIKE ? AND b.status='blocked_hub_stock'""",
+            (f"{code}-%",)).fetchone()["n"]
+        return {
+            "shift_code":code,
+            "total_orders":sum(status_counts.values()),
+            "status_counts":status_counts,
+            "mesh_waiting_orders":c.execute(
+                "SELECT COUNT(*) FROM orders WHERE order_code LIKE ? AND route LIKE 'Mesh%' AND status='Ожидает партии'",
+                (f"{code}-%",)).fetchone()[0],
+            "mesh_in_transit_orders":c.execute(
+                "SELECT COUNT(*) FROM orders WHERE order_code LIKE ? AND route LIKE 'Mesh%' AND status='В пути'",
+                (f"{code}-%",)).fetchone()[0],
+            "mesh_ready_orders":c.execute(
+                "SELECT COUNT(*) FROM orders WHERE order_code LIKE ? AND route LIKE 'Mesh%' AND status='Готов к выдаче'",
+                (f"{code}-%",)).fetchone()[0],
+            "mesh_blocked_orders":int(blocked_orders or 0),
+            "mesh_blocked_batches":int(batch_rows["blocked_batches"] or 0),
+        }
+
+
 def simulation_timeline_df(limit=100):
     with db() as c:
+        state = c.execute("SELECT shift_code FROM simulation_control WHERE id=1").fetchone()
+        code = state["shift_code"] if state else None
+        if not code:
+            return pd.DataFrame(columns=["Такт","Тип","Событие","Заказ","Время"])
         return pd.read_sql_query("""SELECT e.tick_no AS 'Такт',e.event_type AS Тип,
             e.message AS Событие,COALESCE(o.order_code,'—') AS Заказ,e.created_at AS Время
             FROM simulation_events e LEFT JOIN orders o ON o.id=e.order_id
-            ORDER BY e.id DESC LIMIT ?""",c,params=(int(limit),))
+            WHERE e.shift_code=? ORDER BY e.id DESC LIMIT ?""",c,params=(code,int(limit)))
 
 
 def simulation_vehicles_df():
     with db() as c:
+        state = c.execute("SELECT shift_code FROM simulation_control WHERE id=1").fetchone()
+        code = state["shift_code"] if state else None
+        columns = ["id","Заказ","Маршрут","Статус","Затраты, ₽","Источник","Назначение",
+                   "Город_источника","Город_назначения","Прогресс","Тип_источника",
+                   "source_lat","source_lon","dest_lat","dest_lon"]
+        if not code:
+            return pd.DataFrame(columns=columns)
         orders=pd.read_sql_query("""SELECT o.id,o.order_code AS Заказ,o.route AS Маршрут,
             o.status AS Статус,o.estimated_cost AS 'Затраты, ₽',
-            src.name AS Источник,dst.name AS Назначение,
-            src.city AS Город_источника,dst.city AS Город_назначения,
+            COALESCE(src.name,'Источник не указан') AS Источник,
+            COALESCE(dst.name,'ПВЗ не указан') AS Назначение,
+            COALESCE(src.city,'') AS Город_источника,COALESCE(dst.city,'') AS Город_назначения,
             COALESCE(v.progress,0) AS Прогресс,
             CASE WHEN src.point_type='Hub' THEN 'Hub' ELSE 'Anchor' END AS Тип_источника,
             NULL AS source_lat,NULL AS source_lon,NULL AS dest_lat,NULL AS dest_lon
-            FROM orders o JOIN pickup_points src ON src.id=o.source_point_id
-            JOIN pickup_points dst ON dst.id=o.destination_point_id
+            FROM orders o
+            LEFT JOIN pickup_points src ON src.id=o.source_point_id
+            LEFT JOIN pickup_points dst ON dst.id=o.destination_point_id
             LEFT JOIN simulation_vehicle_progress v ON v.order_id=o.id
-            WHERE o.status='В пути' AND o.order_code LIKE
-              (SELECT shift_code || '-%' FROM simulation_control WHERE id=1)
-            ORDER BY o.id DESC LIMIT 40""",c)
+            WHERE o.status='В пути' AND o.order_code LIKE ?
+            ORDER BY o.id DESC LIMIT 200""",c,params=(f"{code}-%",))
         supplies=pd.read_sql_query("""SELECT id,reference AS Заказ,transport_type AS Маршрут,
             status AS Статус,0.0 AS 'Затраты, ₽',from_name AS Источник,to_name AS Назначение,
             '' AS Город_источника,'' AS Город_назначения,progress AS Прогресс,
             'Supply' AS Тип_источника,from_lat AS source_lat,from_lon AS source_lon,
             to_lat AS dest_lat,to_lon AS dest_lon
-            FROM simulation_supply_transports WHERE status='В пути'
-            AND shift_code=(SELECT shift_code FROM simulation_control WHERE id=1)
-            ORDER BY id DESC LIMIT 20""",c)
+            FROM simulation_supply_transports WHERE status='В пути' AND shift_code=?
+            ORDER BY id DESC LIMIT 100""",c,params=(code,))
         return pd.concat([orders,supplies],ignore_index=True)
 
 
-
-
 def simulation_financials():
-    """Transparent transport-only unit economics for the active continuous shift."""
+    """Transport-only model for the active shift, with blocked and waiting batches made explicit."""
+    empty = {"orders":0,"mesh_orders":0,"hub_orders":0,"mesh_trips":0,
+             "mesh_waiting_batches":0,"mesh_blocked_batches":0,
+             "mesh_waiting_orders":0,"mesh_in_transit_orders":0,"mesh_ready_orders":0,
+             "mesh_blocked_orders":0,"mesh_trip_cost":0.0,"mesh_variable_cost":0.0,
+             "hub_cost":0.0,"transport_total":0.0,"hub_baseline":0.0,
+             "savings":0.0,"returns":0}
     with db() as c:
         state=c.execute("SELECT shift_code FROM simulation_control WHERE id=1").fetchone()
         code=state["shift_code"] if state else None
         if not code:
-            return {"orders":0,"mesh_orders":0,"hub_orders":0,"mesh_trips":0,
-                    "mesh_trip_cost":0.0,"mesh_variable_cost":0.0,"hub_cost":0.0,
-                    "transport_total":0.0,"hub_baseline":0.0,"savings":0.0,"returns":0}
+            return empty
         rows=c.execute("""SELECT
                 SUM(CASE WHEN route LIKE 'Mesh%' THEN 1 ELSE 0 END) AS mesh_orders,
                 SUM(CASE WHEN route NOT LIKE 'Mesh%' OR route IS NULL THEN 1 ELSE 0 END) AS hub_orders,
+                SUM(CASE WHEN route LIKE 'Mesh%' AND status='Ожидает партии' THEN 1 ELSE 0 END) AS mesh_waiting_orders,
+                SUM(CASE WHEN route LIKE 'Mesh%' AND status='В пути' THEN 1 ELSE 0 END) AS mesh_in_transit_orders,
+                SUM(CASE WHEN route LIKE 'Mesh%' AND status='Готов к выдаче' THEN 1 ELSE 0 END) AS mesh_ready_orders,
                 COUNT(*) AS total
             FROM orders WHERE order_code LIKE ?""",(f"{code}-%",)).fetchone()
         mesh_orders=int(rows["mesh_orders"] or 0)
@@ -1581,26 +1652,32 @@ def simulation_financials():
         batches=c.execute("""SELECT
                 SUM(CASE WHEN b.status IN ('dispatched','completed') THEN 1 ELSE 0 END) AS dispatched,
                 SUM(CASE WHEN b.status='waiting' THEN 1 ELSE 0 END) AS waiting,
+                SUM(CASE WHEN b.status='blocked_hub_stock' THEN 1 ELSE 0 END) AS blocked,
                 SUM(CASE WHEN b.status IN ('dispatched','completed') THEN b.trip_cost ELSE 0 END) AS actual_cost
             FROM mesh_batches b
-            WHERE b.status IN ('waiting','dispatched','completed')
-            AND b.id IN (
-                SELECT DISTINCT batch_id FROM orders
-                WHERE order_code LIKE ? AND route LIKE 'Mesh%'
-            )""",(f"{code}-%",)).fetchone()
+            WHERE b.id IN (SELECT DISTINCT batch_id FROM orders
+                WHERE order_code LIKE ? AND route LIKE 'Mesh%' AND batch_id IS NOT NULL)""",
+            (f"{code}-%",)).fetchone()
         trips=int(batches["dispatched"] or 0)
         waiting_batches=int(batches["waiting"] or 0)
-        # Include the configured trip estimate for batches that have not dispatched yet.
+        blocked_batches=int(batches["blocked"] or 0)
+        blocked_orders=int(c.execute("""SELECT COUNT(*) FROM orders o JOIN mesh_batches b ON b.id=o.batch_id
+            WHERE o.order_code LIKE ? AND b.status='blocked_hub_stock'""",(f"{code}-%",)).fetchone()[0] or 0)
         trip_cost=float(batches["actual_cost"] or 0) + waiting_batches*float(settings["local_trip_cost"])
-        variable=mesh_orders*float(settings["mesh_variable_cost"])
-        hub=hub_orders*float(settings["hub_cost_per_order"])
-        transport=trip_cost+variable+hub
+        # Blocked Mesh batches are costed conservatively at the Hub reference tariff.
+        mesh_variable=(mesh_orders-blocked_orders)*float(settings["mesh_variable_cost"])
+        hub=(hub_orders+blocked_orders)*float(settings["hub_cost_per_order"])
+        transport=trip_cost+mesh_variable+hub
         baseline=total*float(settings["hub_cost_per_order"])
-        returns=c.execute("""SELECT COUNT(*) AS n FROM returns r JOIN orders o ON o.id=r.order_id
-            WHERE o.order_code LIKE ?""",(f"{code}-%",)).fetchone()["n"]
+        returns=c.execute("""SELECT COUNT(*) FROM returns r JOIN orders o ON o.id=r.order_id
+            WHERE o.order_code LIKE ?""",(f"{code}-%",)).fetchone()[0]
         return {"orders":total,"mesh_orders":mesh_orders,"hub_orders":hub_orders,
                 "mesh_trips":trips,"mesh_waiting_batches":waiting_batches,
-                "mesh_trip_cost":trip_cost,
-                "mesh_variable_cost":variable,"hub_cost":hub,
+                "mesh_blocked_batches":blocked_batches,"mesh_waiting_orders":int(rows["mesh_waiting_orders"] or 0),
+                "mesh_in_transit_orders":int(rows["mesh_in_transit_orders"] or 0),
+                "mesh_ready_orders":int(rows["mesh_ready_orders"] or 0),"mesh_blocked_orders":blocked_orders,
+                "mesh_trip_cost":trip_cost,"mesh_variable_cost":mesh_variable,"hub_cost":hub,
                 "transport_total":transport,"hub_baseline":baseline,
                 "savings":baseline-transport,"returns":int(returns)}
+
+
