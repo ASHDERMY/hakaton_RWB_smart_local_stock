@@ -93,6 +93,21 @@ class ExtendedWorkflowTests(unittest.TestCase):
         state, _ = database.simulation_state()
         self.assertFalse(state["running"])
 
+    def test_clear_temporary_data_also_removes_continuous_shift_supply_and_events(self):
+        before = database.inventory_df().copy()
+        database.start_continuous_simulation()
+        database.continuous_simulation_tick()
+        result = database.clear_temporary_simulation_data()
+        self.assertFalse(database.simulation_state()[0]["running"])
+        self.assertEqual(len(database.simulation_timeline_df()), 0)
+        self.assertEqual(len(database.orders_df()), 0)
+        self.assertEqual(len(database.supplier_deliveries_df()), 0)
+        after = database.inventory_df().copy()
+        self.assertEqual(
+            before[["ПВЗ", "SKU", "Остаток", "Резерв"]].to_dict("records"),
+            after[["ПВЗ", "SKU", "Остаток", "Резерв"]].to_dict("records")
+        )
+
     def test_route_incident_creates_plan_and_changes_mesh_route_via_hub(self):
         for number in range(1, 81):
             database.create_order(
