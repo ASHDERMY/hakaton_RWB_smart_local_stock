@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+from math import ceil
 from database import init_db,seed_demo,products_df,inventory_df
 from engine import choose_route,calculate_costs
 
