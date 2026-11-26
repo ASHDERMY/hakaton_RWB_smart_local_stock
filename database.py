@@ -122,6 +122,23 @@ def init_db():
             FOREIGN KEY(product_id) REFERENCES products(id),
             FOREIGN KEY(hub_point_id) REFERENCES pickup_points(id)
         );
+        CREATE TABLE IF NOT EXISTS simulation_control(
+            id INTEGER PRIMARY KEY CHECK(id=1), running INTEGER NOT NULL DEFAULT 0,
+            shift_code TEXT, tick_no INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT, stopped_at TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT OR IGNORE INTO simulation_control(id,running,tick_no) VALUES(1,0,0);
+        CREATE TABLE IF NOT EXISTS simulation_events(
+            id INTEGER PRIMARY KEY, shift_code TEXT NOT NULL, tick_no INTEGER NOT NULL,
+            event_type TEXT NOT NULL, message TEXT NOT NULL, order_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(order_id) REFERENCES orders(id)
+        );
+        CREATE TABLE IF NOT EXISTS simulation_vehicle_progress(
+            order_id INTEGER PRIMARY KEY, progress REAL NOT NULL DEFAULT 0,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS operational_runs(
             id INTEGER PRIMARY KEY,
             run_code TEXT NOT NULL UNIQUE,
@@ -1246,3 +1263,220 @@ def clear_temporary_simulation_data():
             "returns": len(returns),
             "batches": deleted_batches,
         }
+
+
+def simulation_state():
+    with db() as c:
+        row=c.execute("SELECT * FROM simulation_control WHERE id=1").fetchone()
+        events=pd.read_sql_query(
+            """SELECT e.tick_no AS 'Такт',e.event_type AS Тип,e.message AS Событие,
+            COALESCE(o.order_code,'—') AS Заказ,e.created_at AS Время
+            FROM simulation_events e LEFT JOIN orders o ON o.id=e.order_id
+            ORDER BY e.id DESC LIMIT 80""",c)
+        return dict(row),events
+
+
+def start_continuous_simulation():
+    from datetime import datetime
+    import uuid
+    code="LIVE-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+uuid.uuid4().hex[:4].upper()
+    with db() as c:
+        c.execute("""UPDATE simulation_control SET running=1,shift_code=?,tick_no=0,
+            started_at=CURRENT_TIMESTAMP,stopped_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=1""",(code,))
+        c.execute("INSERT INTO simulation_events(shift_code,tick_no,event_type,message) VALUES(?,0,'Смена','Запущена непрерывная диспетчерская смена')",(code,))
+    return code
+
+
+def stop_continuous_simulation():
+    with db() as c:
+        row=c.execute("SELECT shift_code,tick_no,running FROM simulation_control WHERE id=1").fetchone()
+        if row and row["running"]:
+            c.execute("UPDATE simulation_control SET running=0,stopped_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=1")
+            c.execute("INSERT INTO simulation_events(shift_code,tick_no,event_type,message) VALUES(?,?,'Смена','Диспетчер остановил смену')",
+                      (row["shift_code"],row["tick_no"]))
+            return True
+    return False
+
+
+def _simulation_event(c, shift_code, tick_no, event_type, message, order_id=None):
+    c.execute("""INSERT INTO simulation_events(shift_code,tick_no,event_type,message,order_id)
+        VALUES(?,?,?,?,?)""",(shift_code,tick_no,event_type,message,order_id))
+
+
+def _auto_supplier_and_anchor_replenishment(tick_no, shift_code):
+    import random
+    points=points_df()
+    hubs=points[(points["Тип"]=="Hub") & (points["Активен"]==1)]
+    anchors=points[(points["Тип"]=="Anchor") & (points["Активен"]==1)]
+    products=products_df()
+    sellers=sellers_df()
+    if hubs.empty or anchors.empty or products.empty or sellers.empty:
+        return
+    hub_id=int(hubs.iloc[0]["id"])
+    # Seller -> Hub: automatic inbound replenishment on a periodic cadence.
+    if tick_no % 12 == 1:
+        product=products.sample(1).iloc[0]
+        delivery_id=create_supplier_delivery(int(sellers.iloc[0]["id"]),int(product["id"]),hub_id,random.randint(12,30),
+                                              f"{shift_code}-SUP-{tick_no:05d}")
+        receive_supplier_delivery(delivery_id)
+        with db() as c:
+            _simulation_event(c,shift_code,tick_no,"Поставка продавца → Hub",
+                              f"Продавец {sellers.iloc[0]['Продавец']} поставил {int(product['id'])} SKU на Hub; поставка принята",None)
+    # Hub -> Anchor: transfer stock when the local buffer is low.
+    anchor=anchors.iloc[0]
+    for _,product in products.iterrows():
+        with db() as c:
+            c.execute("INSERT OR IGNORE INTO inventory(point_id,product_id,quantity) VALUES(?,?,0)",
+                      (int(anchor["id"]),int(product["id"])))
+            a=c.execute("SELECT quantity-reserved AS available FROM inventory WHERE point_id=? AND product_id=?",
+                        (int(anchor["id"]),int(product["id"]))).fetchone()["available"]
+            h=c.execute("SELECT quantity-reserved AS available FROM inventory WHERE point_id=? AND product_id=?",
+                        (hub_id,int(product["id"]))).fetchone()
+            havailable=int(h["available"]) if h else 0
+            if int(a)<=2 and havailable>=8:
+                qty=min(15,havailable)
+                c.execute("UPDATE inventory SET quantity=quantity-? WHERE point_id=? AND product_id=?",(qty,hub_id,int(product["id"])))
+                c.execute("UPDATE inventory SET quantity=quantity+? WHERE point_id=? AND product_id=?",(qty,int(anchor["id"]),int(product["id"])))
+                ref=f"{shift_code}-H2A-{tick_no:05d}-{int(product['id'])}"
+                c.execute("INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note) VALUES(?,?,?,?,?,?)",
+                          (hub_id,int(product["id"]),"hub_transfer_out",qty,ref,"Автоматическое пополнение Anchor из Hub"))
+                c.execute("INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note) VALUES(?,?,?,?,?,?)",
+                          (int(anchor["id"]),int(product["id"]),"hub_transfer_in",qty,ref,"Автоматическое пополнение Anchor из Hub"))
+                _simulation_event(c,shift_code,tick_no,"Hub → Anchor",
+                                  f"Перемещено {qty} ед. {product['SKU']} со склада Hub на {anchor['Название']}")
+
+
+def continuous_simulation_tick():
+    """Advance one persistent tick: supply chain, orders, transport, incidents and returns."""
+    import random
+    from datetime import datetime
+    with db() as c:
+        state=c.execute("SELECT * FROM simulation_control WHERE id=1").fetchone()
+        if not state or not state["running"]:
+            return {"running":False,"tick":0}
+        shift_code=state["shift_code"]
+        tick_no=int(state["tick_no"])+1
+        c.execute("UPDATE simulation_control SET tick_no=?,updated_at=CURRENT_TIMESTAMP WHERE id=1",(tick_no,))
+    _auto_supplier_and_anchor_replenishment(tick_no,shift_code)
+
+    # Generate one order per tick; the regular order engine decides Mesh vs Hub.
+    created_id=None
+    points=points_df()
+    destinations=points[(points["Тип"]=="Обычный") & (points["Активен"]==1)]
+    products=products_df()
+    if not destinations.empty and not products.empty:
+        destination=destinations.sample(1).iloc[0]
+        product=products.sample(1).iloc[0]
+        code=f"{shift_code}-O-{tick_no:05d}"
+        settings={k:float(v["value"]) for k,v in settings_dict().items()}
+        try:
+            create_order(code,int(product["id"]),int(destination["id"]),1,settings)
+            with db() as c:
+                created_id=c.execute("SELECT id FROM orders WHERE order_code=?",(code,)).fetchone()["id"]
+                _simulation_event(c,shift_code,tick_no,"Новый заказ",
+                                  f"Создан заказ {code}; маршрут определён правилами Mesh/Hub",created_id)
+        except ValueError as exc:
+            with db() as c:
+                _simulation_event(c,shift_code,tick_no,"Дефицит запаса",
+                                  f"Заказ не создан: {str(exc)[:180]}")
+    process_mesh_batches()
+
+    # Dispatch Hub reservations; Mesh batches are dispatched by their own evaluator.
+    with db() as c:
+        reserved=c.execute("""SELECT id,order_code FROM orders WHERE status='Зарезервирован'
+            AND order_code LIKE ? ORDER BY id LIMIT 10""",(f"{shift_code}-%",)).fetchall()
+    for row in reserved:
+        update_order_status(int(row["id"]),"В пути")
+        with db() as c:
+            _simulation_event(c,shift_code,tick_no,"Отправка",
+                              f"Заказ {row['order_code']} покинул Hub",int(row["id"]))
+
+    # Move all in-transit orders on a short visual route timeline.
+    with db() as c:
+        moving=c.execute("""SELECT id,order_code,route FROM orders
+            WHERE status='В пути' AND order_code LIKE ? ORDER BY id LIMIT 60""",(f"{shift_code}-%",)).fetchall()
+    for order in moving:
+        with db() as c:
+            c.execute("INSERT OR IGNORE INTO simulation_vehicle_progress(order_id,progress) VALUES(?,0)",(order["id"],))
+            progress=float(c.execute("SELECT progress FROM simulation_vehicle_progress WHERE order_id=?",(order["id"],)).fetchone()["progress"])
+            next_progress=min(1.0,progress+random.uniform(0.12,0.24))
+            c.execute("UPDATE simulation_vehicle_progress SET progress=?,updated_at=CURRENT_TIMESTAMP WHERE order_id=?",
+                      (next_progress,order["id"]))
+        if next_progress>=1:
+            update_order_status(int(order["id"]),"Готов к выдаче")
+            with db() as c:
+                _simulation_event(c,shift_code,tick_no,"Прибытие в ПВЗ",
+                                  f"Заказ {order['order_code']} прибыл в пункт назначения",int(order["id"]))
+        else:
+            if random.random()<0.08 and "Mesh" in str(order["route"]):
+                try:
+                    add_incident(int(order["id"]),"Дорожная задержка","Случайная задержка движения на маршруте; проверка обхода через Hub.")
+                    with db() as c:
+                        _simulation_event(c,shift_code,tick_no,"Инцидент",
+                                          f"Для заказа {order['order_code']} зарегистрирована дорожная задержка",int(order["id"]))
+                except ValueError:
+                    pass
+
+    # Customer pickup and occasional return flow.
+    with db() as c:
+        ready=c.execute("""SELECT id,order_code,quantity FROM orders WHERE status='Готов к выдаче'
+            AND order_code LIKE ? ORDER BY id LIMIT 8""",(f"{shift_code}-%",)).fetchall()
+    for order in ready:
+        if random.random()<0.45:
+            update_order_status(int(order["id"]),"Выдан")
+            with db() as c:
+                _simulation_event(c,shift_code,tick_no,"Выдача покупателю",
+                                  f"Заказ {order['order_code']} выдан покупателю",int(order["id"]))
+            if random.random()<0.10:
+                try:
+                    ret_id=create_return(int(order["id"]),1,random.choice([
+                        "Не подошёл товар","Повреждение упаковки","Отказ покупателя","Ошибочный заказ"
+                    ]))
+                    process_return(ret_id,random.choice(["Пригоден","Повреждён"]))
+                    with db() as c:
+                        _simulation_event(c,shift_code,tick_no,"Возврат",
+                                          f"Оформлен и обработан возврат по заказу {order['order_code']}",int(order["id"]))
+                except ValueError:
+                    pass
+
+    with db() as c:
+        # Complete shift aggregates are persisted for the control-room report.
+        counts=c.execute("""SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN status='В пути' THEN 1 ELSE 0 END) AS moving,
+            SUM(CASE WHEN status='Готов к выдаче' THEN 1 ELSE 0 END) AS ready,
+            SUM(CASE WHEN status='Выдан' THEN 1 ELSE 0 END) AS issued,
+            COALESCE(SUM(estimated_cost),0) AS costs
+            FROM orders WHERE order_code LIKE ?""",(f"{shift_code}-%",)).fetchone()
+        return {
+            "running":True,"shift_code":shift_code,"tick":tick_no,
+            "orders":int(counts["total"] or 0),"moving":int(counts["moving"] or 0),
+            "ready":int(counts["ready"] or 0),"issued":int(counts["issued"] or 0),
+            "estimated_cost":float(counts["costs"] or 0)
+        }
+
+
+def simulation_timeline_df(limit=100):
+    with db() as c:
+        return pd.read_sql_query("""SELECT e.tick_no AS 'Такт',e.event_type AS Тип,
+            e.message AS Событие,COALESCE(o.order_code,'—') AS Заказ,e.created_at AS Время
+            FROM simulation_events e LEFT JOIN orders o ON o.id=e.order_id
+            ORDER BY e.id DESC LIMIT ?""",c,params=(int(limit),))
+
+
+def simulation_vehicles_df():
+    with db() as c:
+        return pd.read_sql_query("""SELECT o.id,o.order_code AS Заказ,o.route AS Маршрут,
+            o.status AS Статус,o.estimated_cost AS 'Затраты, ₽',
+            src.name AS Источник,dst.name AS Назначение,
+            src.city AS Город_источника,dst.city AS Город_назначения,
+            COALESCE(v.progress,0) AS Прогресс,
+            CASE WHEN src.point_type='Hub' THEN 'Hub' ELSE 'Anchor' END AS Тип_источника
+            FROM orders o JOIN pickup_points src ON src.id=o.source_point_id
+            JOIN pickup_points dst ON dst.id=o.destination_point_id
+            LEFT JOIN simulation_vehicle_progress v ON v.order_id=o.id
+            WHERE o.status='В пути' AND o.order_code LIKE
+              (SELECT shift_code || '-%' FROM simulation_control WHERE id=1)
+            ORDER BY o.id DESC LIMIT 40""",c)
+
+
