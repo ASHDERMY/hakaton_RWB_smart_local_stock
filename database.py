@@ -193,14 +193,14 @@ def create_order(order_code,product_id,destination_point_id,quantity,settings):
         return {"route":route,"source":source["name"],"estimated_cost":estimate}
 
 def update_order_status(order_id,new_status):
-    transitions={"Зарезервирован":{"В пути","Отменён"},"В пути":{"Готов к выдаче","Ошибка"},"Ошибка":{"В пути","Отменён"},"Готов к выдаче":{"Выдан","Возврат оформлен"}}
+    transitions={"Зарезервирован":{"В пути","Отменён"},"В пути":{"Готов к выдаче","Ошибка"},"Ошибка":{"В пути"},"Готов к выдаче":{"Выдан","Возврат оформлен"}}
     with connect() as c:
         order=c.execute("SELECT * FROM orders WHERE id=?",(order_id,)).fetchone()
         if not order: raise ValueError("Заказ не найден.")
         if new_status not in transitions.get(order["status"],set()): raise ValueError(f"Недопустимый переход: {order['status']} → {new_status}.")
         if new_status=="Отменён":
             c.execute("UPDATE inventory SET reserved=MAX(0,reserved-?) WHERE point_id=? AND product_id=?",(order["quantity"],order["source_point_id"],order["product_id"]))
-        if new_status=="В пути":
+        if new_status=="В пути" and order["status"]=="Зарезервирован":
             c.execute("UPDATE inventory SET quantity=quantity-?,reserved=MAX(0,reserved-?) WHERE point_id=? AND product_id=?",
                       (order["quantity"],order["quantity"],order["source_point_id"],order["product_id"]))
             c.execute("INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note) VALUES(?,?,?,?,?,?)",
