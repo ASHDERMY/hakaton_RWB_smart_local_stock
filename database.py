@@ -192,6 +192,22 @@ def update_order_status(order_id,new_status):
                       (order["quantity"],order["quantity"],order["source_point_id"],order["product_id"]))
             c.execute("INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note) VALUES(?,?,?,?,?,?)",
                       (order["source_point_id"],order["product_id"],"dispatch",order["quantity"],order["order_code"],"Отправка по заказу"))
+        if new_status=="Готов к выдаче":
+            c.execute("INSERT OR IGNORE INTO inventory(point_id,product_id,quantity) VALUES(?,?,0)",
+                      (order["destination_point_id"],order["product_id"]))
+            c.execute("UPDATE inventory SET quantity=quantity+? WHERE point_id=? AND product_id=?",
+                      (order["quantity"],order["destination_point_id"],order["product_id"]))
+            c.execute("INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note) VALUES(?,?,?,?,?,?)",
+                      (order["destination_point_id"],order["product_id"],"arrival",order["quantity"],order["order_code"],"Поступление в ПВЗ назначения"))
+        if new_status=="Выдан":
+            available=c.execute("SELECT quantity FROM inventory WHERE point_id=? AND product_id=?",
+                                (order["destination_point_id"],order["product_id"])).fetchone()
+            if not available or available["quantity"]<order["quantity"]:
+                raise ValueError("На ПВЗ назначения недостаточно товара для выдачи.")
+            c.execute("UPDATE inventory SET quantity=quantity-? WHERE point_id=? AND product_id=?",
+                      (order["quantity"],order["destination_point_id"],order["product_id"]))
+            c.execute("INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note) VALUES(?,?,?,?,?,?)",
+                      (order["destination_point_id"],order["product_id"],"issue",order["quantity"],order["order_code"],"Выдача покупателю"))
         c.execute("UPDATE orders SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(new_status,order_id))
 
 def create_return(order_id,quantity,reason):
@@ -210,11 +226,11 @@ def process_return(return_id,condition_status):
         if not ret or ret["status"]!="pending": raise ValueError("Возврат уже обработан или не найден.")
         order=c.execute("SELECT * FROM orders WHERE id=?",(ret["order_id"],)).fetchone()
         if condition_status=="Пригоден":
-            point_id=order["source_point_id"]
+            point_id=order["destination_point_id"]
             c.execute("INSERT OR IGNORE INTO inventory(point_id,product_id,quantity) VALUES(?,?,0)",(point_id,order["product_id"]))
             c.execute("UPDATE inventory SET quantity=quantity+? WHERE point_id=? AND product_id=?",(ret["quantity"],point_id,order["product_id"]))
             c.execute("INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note) VALUES(?,?,?,?,?,?)",
-                      (point_id,order["product_id"],"return",ret["quantity"],str(return_id),"Возврат пригодного товара"))
+                      (point_id,order["product_id"],"return",ret["quantity"],str(return_id),"Возврат пригодного товара на ПВЗ назначения"))
         c.execute("UPDATE returns SET condition_status=?,status='processed' WHERE id=?",(condition_status,return_id))
 
 def returns_df():
