@@ -228,6 +228,13 @@ def seed_demo():
                 (point_name, point_type, city, point_name),
             )
 
+        # Демонстрационный продавец — вымышленный участник модели, не контрагент RWB.
+        c.execute(
+            """INSERT OR IGNORE INTO sellers(name,category,contact)
+            VALUES(?,?,?)""",
+            ("ООО «ТехноПоставка»", "Электроника и аксессуары", "demo@example.invalid"),
+        )
+
 
 def products_df():
     with db() as c:
