@@ -1396,7 +1396,9 @@ def prepare_mature_simulation():
 
     products = products_df()
     points = points_df()
-    if products.empty or not (points["Тип"] == "Hub").any():
+    if (products.empty
+            or not ((points["Тип"] == "Hub") & (points["Активен"] == 1)).any()
+            or not ((points["Тип"] == "Обычный") & (points["Активен"] == 1)).any()):
         seed_demo()
         products = products_df()
         points = points_df()
@@ -1581,7 +1583,8 @@ def start_continuous_simulation(start_day=1):
             f"Запуск с 150-го дня: в историю загружено {baseline['orders_count']} модельных заказов "
             f"за {baseline['day_count']} дней; Mesh: {baseline['mesh_orders']}, Hub: {baseline['hub_orders']}; "
             f"расчётные затраты с системой: {baseline['total_cost']:.2f} ₽; эффект к базовому Hub: "
-            f"{baseline['net_effect']:.2f} ₽. История синтетическая, не реальные заказы RWB."
+            f"{baseline['net_effect']:.2f} ₽. При 40 заказах/день и окне 5 часов накапливается около "
+            f"8–9 заказов на сеть, поэтому Mesh не проходит порог стоимости. История синтетическая, не реальные заказы RWB."
             if baseline else "Запущена симуляция с 1-го дня внедрения Smart Local Stock."
         )
         c.execute("INSERT INTO simulation_events(shift_code,tick_no,event_type,message) VALUES(?,0,'Смена',?)",(code,message))
