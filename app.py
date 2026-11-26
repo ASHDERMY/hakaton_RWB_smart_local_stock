@@ -722,11 +722,15 @@ elif page=="Экономика участников":
         hub_cost = st.number_input("Сравнительная стоимость Hub, ₽/заказ", min_value=0.0, value=float(cfg["hub_cost_per_order"]), step=1.0, key="stake_hub")
         variable = st.number_input("Переменные Mesh, ₽/заказ", min_value=0.0, value=float(cfg["mesh_variable_cost"]), step=0.5, key="stake_var")
     with n3:
-        pvz_reward = st.number_input("Вознаграждение ПВЗ за операции, ₽/заказ", min_value=0.0, value=18.0, step=1.0, key="stake_pvz")
-        storage_cost = st.number_input("Прочие расходы сети, ₽/заказ", min_value=0.0, value=5.0, step=0.5, key="stake_storage")
+        pvz_reward = st.number_input("Доплата Anchor сверх базового тарифа, ₽/заказ", min_value=0.0, value=3.5, step=0.5, key="stake_pvz")
+        storage_cost = st.number_input("Хранение, ₽/заказ", min_value=0.0, value=2.5, step=0.5, key="stake_storage")
 
+    replenishment_cost = st.number_input("Пополнение Anchor, ₽/заказ", min_value=0.0, value=9.0, step=0.5, key="stake_replenishment")
+    system_monthly = st.number_input("Система, ₽/месяц", min_value=0.0, value=10000.0, step=1000.0, key="stake_system_monthly")
+    system_orders = st.number_input("Заказов в месяц для распределения системы", min_value=1, value=1200, step=100, key="stake_system_orders")
     mesh_transport = trip_cost / batch_n + variable
-    marketplace_delta = hub_cost - mesh_transport - pvz_reward - storage_cost
+    system_per_order = system_monthly / system_orders
+    marketplace_delta = hub_cost - mesh_transport - pvz_reward - storage_cost - replenishment_cost - system_per_order
     p1, p2, p3 = st.columns(3)
     p1.metric("Mesh транспорт на заказ", f"{mesh_transport:,.2f} ₽")
     p2.metric("Hub сравнение", f"{hub_cost:,.2f} ₽")
@@ -746,7 +750,8 @@ elif page=="Экономика участников":
     with r4:
         picking_fee = st.number_input("Сборка и выдача, ₽", min_value=0.0, value=10.0, step=1.0, key="stake_pick")
     pvz_income = receiving_fee + storage_fee * storage_days + picking_fee
-    st.metric("Начисление ПВЗ за заказ", f"{pvz_income:,.2f} ₽")
+    st.metric("Начисление Anchor за заказ", f"{pvz_income + pvz_reward:,.2f} ₽")
+    st.caption(f"В том числе базовые операции {pvz_income:,.2f} ₽ и дополнительная выплата Anchor {pvz_reward:,.2f} ₽.")
     st.caption("Чистая прибыль ПВЗ = начисление минус труд, площадь, упаковка и потери. Эти расходы необходимо уточнить пилотом.")
 
     st.divider()
@@ -785,7 +790,7 @@ elif page=="Экономика участников":
         st.success("Сценарий проходит заданные ограничения. Дополнительно проверь расходы ПВЗ, возвраты и риски хранения.")
     else:
         st.warning("Сценарий пока не проходит все ограничения. Следует оставить Hub или изменить загрузку/тарифы.")
-    st.code("C_Mesh = C_trip / N_batch + C_variable\nDelta_Marketplace = C_Hub - C_Mesh - Reward_PVZ - Other_Costs\nProfit_Seller = Price - COGS - Commission - Seller_Logistics\nIncome_PVZ = Receiving + Storage * Days + Picking", language="text")
+    st.code("C_Mesh = C_trip / N_batch + C_variable + Anchor_Fee + Replenishment + Storage + System/Order\nDelta_Marketplace = C_Hub - C_Mesh\nProfit_Seller = Price - COGS - Commission - Seller_Logistics\nIncome_Anchor = Base_Operations + Incremental_Anchor_Fee", language="text")
 
 elif page=="Финансы":
     st.subheader("Финансы и прогноз экономики Mesh")
@@ -926,7 +931,7 @@ elif page=="Настройки модели":
     for key,label in labels.items():
         item=raw[key]
         st.write(f"**{label}** · {item['classification']} · {item['note']}")
-        minimum = 1.0 if key in {"batch_target_orders","max_orders","max_volume_l","max_wait_hours","hub_cost_per_order"} else 0.0
+        minimum = 1.0 if key in {"batch_target_orders","max_orders","max_volume_l","max_wait_hours","hub_cost_per_order","monthly_orders_forecast"} else 0.0
         val=st.number_input(label,min_value=minimum,value=float(item["value"]),key="setting_"+key)
         if st.button("Сохранить: "+label,key="save_"+key):
             save_setting(key,val); st.success("Сохранено. Новые заказы будут использовать это значение.")
