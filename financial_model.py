@@ -45,7 +45,7 @@ def forecast_financials(
     trip_cost=2400.0,
     hub_cost_per_order=62.0,
     variable_cost=14.5,
-    anchor_fee=18.0,
+    anchor_fee=3.5,
     replenishment_per_order=9.0,
     storage_per_order=2.5,
     handling_per_order=0.0,
@@ -150,7 +150,10 @@ def break_even_anchor_fee(
 ):
     demand = max(1, int(orders_per_month))
     anchors = max(1, int(anchors))
-    mesh_orders = max(1, int(round(demand * max(0.0, min(100.0, float(mesh_share_pct))) / 100.0)))
+    share = max(0.0, min(100.0, float(mesh_share_pct))) / 100.0
+    if share == 0.0:
+        return 0.0
+    mesh_orders = max(1, int(round(demand * share)))
     capacity = max(1, min(int(max_orders), int(float(max_volume_l) // max(float(avg_order_volume_l), 0.000001))))
     batch_orders = max(1, min(int(batch_orders), capacity))
     trips = anchors * ceil((mesh_orders / anchors) / batch_orders)
