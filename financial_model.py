@@ -93,7 +93,8 @@ def forecast_financials(
         rows.append({
             "month": month, "orders": demand, "mesh_orders": mesh_orders,
             "hub_orders": hub_orders, "mesh_share_pct": share * 100,
-            "trips": trips, "mesh_cost": round(mesh_total, 2),
+            "trips": trips, "avg_orders_per_trip": round(mesh_orders / trips, 2) if trips else 0.0,
+            "mesh_cost": round(mesh_total, 2),
             "hub_cost": round(hub_total, 2), "system_cost": round(system_total, 2),
             "baseline_hub_cost": round(baseline, 2),
             "combined_cost": round(combined, 2),
