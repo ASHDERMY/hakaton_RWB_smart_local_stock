@@ -839,18 +839,20 @@ elif page=="Финансы":
             storage = st.number_input("Хранение, ₽/заказ", min_value=0.0, value=float(forecast_cfg["storage_per_order"]), step=0.5, key="forecast_storage")
         with y3:
             handling = st.number_input("Дополнительная обработка и риск, ₽/заказ", min_value=0.0, value=0.0, step=0.5, key="forecast_handling")
-        z1, z2, z3 = st.columns(3)
+        z1, z2, z3, z4 = st.columns(4)
         with z1:
             return_rate = st.number_input("Доля возвратов, %", min_value=0.0, max_value=100.0, value=0.0, step=0.5, key="forecast_return_rate")
         with z2:
             return_cost = st.number_input("Стоимость одного возврата, ₽", min_value=0.0, value=0.0, step=10.0, key="forecast_return_cost")
         with z3:
             growth = st.number_input("Рост заказов в месяц, %", min_value=-50.0, max_value=100.0, value=0.0, step=1.0, key="forecast_growth")
+        with z4:
+            avg_order_volume = st.number_input("Средний объём заказа, л", min_value=0.1, value=4.0, step=0.5, key="forecast_avg_volume")
         discount_rate = st.number_input("Ставка дисконтирования, % годовых", min_value=0.0, max_value=100.0, value=15.0, step=1.0, key="forecast_discount")
 
     forecast = forecast_financials(
         monthly_orders=monthly_orders, mesh_share_pct=mesh_share, anchors=anchors,
-        batch_orders=batch_orders, max_orders=int(forecast_cfg["max_orders"]), avg_order_volume_l=4.0, max_volume_l=float(forecast_cfg["max_volume_l"]),
+        batch_orders=batch_orders, max_orders=int(forecast_cfg["max_orders"]), avg_order_volume_l=avg_order_volume, max_volume_l=float(forecast_cfg["max_volume_l"]),
         trip_cost=trip_cost, hub_cost_per_order=hub_cost, variable_cost=variable,
         anchor_fee=anchor_fee, replenishment_per_order=replenishment,
         storage_per_order=storage, handling_per_order=handling,
