@@ -64,6 +64,22 @@ class ExtendedWorkflowTests(unittest.TestCase):
         self.assertEqual(snapshot["today_runs"]["runs_today"], 1)
         self.assertEqual(snapshot["today_runs"]["simulated_orders"], 5)
 
+    def test_clear_temporary_simulation_data_reverses_stock_and_keeps_catalog(self):
+        before = database.inventory_df().copy()
+        database.run_daily_operations(5, False, 2)
+        result = database.clear_temporary_simulation_data()
+        self.assertEqual(result["runs"], 1)
+        self.assertEqual(result["orders"], 5)
+        self.assertEqual(len(database.orders_df()), 0)
+        self.assertEqual(len(database.operational_runs_df()), 0)
+        after = database.inventory_df().copy()
+        self.assertEqual(
+            before[["ПВЗ", "SKU", "Остаток", "Резерв"]].to_dict("records"),
+            after[["ПВЗ", "SKU", "Остаток", "Резерв"]].to_dict("records")
+        )
+        self.assertGreater(len(database.products_df()), 0)
+        self.assertGreater(len(database.points_df()), 0)
+
     def test_route_incident_creates_plan_and_changes_mesh_route_via_hub(self):
         for number in range(1, 81):
             database.create_order(
