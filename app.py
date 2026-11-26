@@ -170,6 +170,56 @@ elif page=="Заказы":
 
 elif page=="Партии Mesh":
     st.subheader("Накопление и отправка локальных партий")
+    st.markdown("#### Быстрая демонстрация Mesh для защиты")
+    demo_products = products_df()
+    demo_points = points_df()
+    demo_inventory = inventory_df()
+    demo_settings = settings_values()
+    demo_target = min(int(demo_settings["batch_target_orders"]), int(demo_settings["max_orders"]))
+    demo_anchors = demo_points[demo_points["Тип"] == "Anchor"]
+    if not demo_products.empty and not demo_anchors.empty:
+        anchor_names = demo_anchors["Название"].tolist()
+        available_demo = demo_inventory[
+            (demo_inventory["Тип"] == "Anchor") &
+            (demo_inventory["ПВЗ"].isin(anchor_names)) &
+            (demo_inventory["Доступно"] >= demo_target)
+        ]
+        candidate_skus = available_demo["SKU"].unique().tolist()
+        candidate_products = demo_products[
+            demo_products["SKU"].isin(candidate_skus) &
+            (demo_products["Объём, л"] * demo_target <= float(demo_settings["max_volume_l"]))
+        ]
+        demo_destinations = demo_points[demo_points["Тип"] == "Обычный"]
+        if not candidate_products.empty and not demo_destinations.empty:
+            dpmap = dict(zip(candidate_products["Товар"] + " (" + candidate_products["SKU"] + ")", candidate_products["id"]))
+            ddmap = dict(zip(demo_destinations["Название"], demo_destinations["id"]))
+            dc1, dc2 = st.columns(2)
+            with dc1:
+                demo_product = st.selectbox("Товар для демонстрационной партии", list(dpmap), key="demo_mesh_product")
+            with dc2:
+                default_dest = next((n for n in ddmap if "Советская" in n), list(ddmap)[0])
+                demo_destination = st.selectbox("ПВЗ назначения", list(ddmap), index=list(ddmap).index(default_dest), key="demo_mesh_destination")
+            st.caption(f"Будет создано {demo_target} отдельных заказов. Система соберёт их в одну партию, проверит вместимость и сравнит Mesh с Hub по фактическому размеру партии. Демозаказы останутся в базе и изменят остатки.")
+            if st.button("Создать и обработать демонстрационную партию", type="primary", key="run_mesh_demo"):
+                from datetime import datetime
+                prefix = datetime.now().strftime("%Y%m%d%H%M%S")
+                results = []
+                try:
+                    for i in range(1, demo_target + 1):
+                        results.append(create_order(
+                            f"DEMO-MESH-{prefix}-{i:03d}",
+                            dpmap[demo_product], ddmap[demo_destination], 1, demo_settings
+                        ))
+                    route_result = results[-1]
+                    st.success(f"Создано {len(results)} заказов. Итоговый маршрут: {route_result['route']}; статус: {route_result['status']}; источник: {route_result['source']}; оценка на заказ: {route_result['estimated_cost']:.2f} ₽.")
+                    st.info("Открой «Карта логистики» и выбери заказ DEMO-MESH, чтобы показать маршрут. В разделе «Заказы» можно провести его по статусам до выдачи.")
+                except Exception as exc:
+                    st.error(f"Демонстрация остановлена: {exc}. Проверь остаток Anchor и параметры модели; часть заказов могла успеть сохраниться.")
+        else:
+            st.warning(f"Для партии из {demo_target} заказов не найден товар с достаточным доступным остатком в Anchor и подходящим суммарным объёмом. Пополни Anchor или скорректируй целевую загрузку.")
+    else:
+        st.info("Для демонстрации сначала добавь демонстрационные товары, точки и остатки.")
+
     st.caption("Партии формируются отдельно для пары Anchor → обычный ПВЗ. Учитываются реальные количество заказов и суммарный объём товаров.")
     if st.button("Обработать ожидающие партии", type="primary"):
         results = process_mesh_batches()
