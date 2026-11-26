@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
 from map_view import render_logistics_map
-from engine import replenishment_qty
+from engine import replenishment_qty, plan_multi_stop_routes
 from database import (
-    init_db, seed_demo, products_df, inventory_df, points_df, orders_df,
+    init_db, seed_demo, products_df, inventory_df, points_df, orders_df, local_delivery_demand_df, save_point_coordinates,
     settings_dict, save_setting, add_product, receive_stock, create_order,
     update_order_status, create_return, process_return, returns_df,
     movements_df, incidents_df, add_incident, finance_summary,
@@ -265,6 +265,83 @@ if page=="Панель управления":
 
 elif page=="Карта логистики":
     render_logistics_map(orders_df())
+    st.divider()
+    st.subheader("Планировщик комбинированных локальных рейсов")
+    st.caption(
+        "Близкие обычные ПВЗ объединяются в один рейс Anchor → несколько точек. "
+        "Удалённые точки получают отдельные рейсы. Предварительная группировка использует "
+        "расстояние по прямой; дорожную геометрию следует уточнять через OSRM. "
+        "Это рекомендация: статусы заказов и складские остатки не меняются."
+    )
+    active_points = points_df()
+    anchors = active_points[(active_points["Тип"] == "Anchor") & (active_points["Активен"] == 1)] if not active_points.empty else active_points
+    if anchors.empty:
+        st.info("Добавьте активный Anchor, чтобы построить локальные маршруты.")
+    else:
+        anchor_labels = {f'{row["Название"]} · {row["Город"]} · ID {int(row["id"])}': int(row["id"]) for _, row in anchors.iterrows()}
+        selected_anchor_label = st.selectbox("Опорный склад Anchor", list(anchor_labels), key="local_route_anchor")
+        selected_anchor_id = anchor_labels[selected_anchor_label]
+        anchor_row = anchors[anchors["id"] == selected_anchor_id].iloc[0]
+        detour_limit = st.slider(
+            "Допустимое увеличение маршрута при добавлении следующего ПВЗ, км",
+            min_value=0.5, max_value=15.0, value=2.0, step=0.5,
+            help="Предварительный географический фильтр по расстоянию по прямой, не дорожный километраж.",
+        )
+        route_settings = settings_values()
+        demand = local_delivery_demand_df(selected_anchor_id)
+        if pd.isna(anchor_row["Широта"]) or pd.isna(anchor_row["Долгота"]):
+            st.warning("У выбранного Anchor не заданы координаты. Укажите их в блоке «Координаты точек сети».")
+        elif demand.empty:
+            st.info("Нет заказов Mesh, ожидающих отправки из этого Anchor. Для расчёта нужны заказы со статусом «Ожидает партии».")
+        else:
+            plan = plan_multi_stop_routes(
+                anchor={"lat": float(anchor_row["Широта"]), "lon": float(anchor_row["Долгота"])},
+                stops=demand.to_dict("records"),
+                max_orders=int(route_settings["max_orders"]),
+                max_volume_l=float(route_settings["max_volume_l"]),
+                trip_cost=float(route_settings["local_trip_cost"]),
+                variable_cost_per_order=float(route_settings["mesh_variable_cost"]),
+                hub_cost_per_order=float(route_settings["hub_cost_per_order"]),
+                max_detour_km=detour_limit,
+            )
+            routes = plan["routes"]
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Планируемых рейсов", len(routes))
+            m2.metric("Рекомендация Mesh", sum(r["decision"] == "Mesh" for r in routes))
+            m3.metric("Рекомендация Hub", sum(r["decision"] == "Hub" for r in routes))
+            m4.metric("Заказов в плане", sum(r["total_orders"] for r in routes))
+            if routes:
+                table = [{
+                    "Рейс": r["route_no"],
+                    "Последовательность ПВЗ": " → ".join(r["stop_names"]),
+                    "Заказов": r["total_orders"],
+                    "Объём, л": r["total_volume_l"],
+                    "Расстояние по прямой туда-обратно, км": r["distance_km_straight"],
+                    "Mesh, ₽/заказ": r["mesh_per_order"],
+                    "Hub, ₽/заказ": r["hub_per_order"],
+                    "Рекомендация": r["decision"],
+                    "Обоснование": r["reason"],
+                } for r in routes]
+                st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
+                st.caption("Стоимость рейса распределяется по заказам внутри группы. Планировщик не списывает товар и не запускает транспорт.")
+            if plan["skipped"]:
+                st.warning("Некоторые точки не включены: нет корректных координат или спрос превышает вместимость одного рейса.")
+                st.dataframe(pd.DataFrame(plan["skipped"]), use_container_width=True, hide_index=True)
+
+    with st.expander("Координаты точек сети"):
+        st.caption("Указывайте проверенные координаты. Демо-координаты — ориентиры, а не подтверждённые адреса ПВЗ WB.")
+        if not active_points.empty:
+            point_labels = {f'{row["Название"]} · {row["Город"]} · ID {int(row["id"])}': int(row["id"]) for _, row in active_points.iterrows()}
+            chosen_label = st.selectbox("Точка для редактирования координат", list(point_labels), key="coordinate_point")
+            chosen = active_points[active_points["id"] == point_labels[chosen_label]].iloc[0]
+            default_lat = 56.631364 if pd.isna(chosen["Широта"]) else float(chosen["Широта"])
+            default_lon = 47.890917 if pd.isna(chosen["Долгота"]) else float(chosen["Долгота"])
+            with st.form("save_point_coordinates_form"):
+                lat_value = st.number_input("Широта", min_value=-90.0, max_value=90.0, value=default_lat, format="%.6f")
+                lon_value = st.number_input("Долгота", min_value=-180.0, max_value=180.0, value=default_lon, format="%.6f")
+                if st.form_submit_button("Сохранить координаты"):
+                    show_error(lambda: save_point_coordinates(point_labels[chosen_label], lat_value, lon_value))
+
 
 elif page=="Товары и ПВЗ":
     left,right=st.columns([1,1])
@@ -290,9 +367,14 @@ elif page=="Товары и ПВЗ":
                 new_point_name=st.text_input("Название точки")
                 new_point_city=st.text_input("Город")
                 new_point_type=st.selectbox("Тип точки",["Anchor","Обычный","Hub"])
+                new_point_lat=st.number_input("Широта (необязательно)",min_value=-90.0,max_value=90.0,value=0.0,format="%.6f")
+                new_point_lon=st.number_input("Долгота (необязательно)",min_value=-180.0,max_value=180.0,value=0.0,format="%.6f")
+                use_coordinates=st.checkbox("Сохранить координаты",value=False)
                 point_submit=st.form_submit_button("Добавить активную точку")
                 if point_submit:
-                    show_error(lambda:add_pickup_point(new_point_name,new_point_type,new_point_city))
+                    show_error(lambda:add_pickup_point(new_point_name,new_point_type,new_point_city,
+                        new_point_lat if use_coordinates else None,
+                        new_point_lon if use_coordinates else None))
 
 elif page=="Склад и приёмка":
     st.subheader("Остатки и операции приёмки")
