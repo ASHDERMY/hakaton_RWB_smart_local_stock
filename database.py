@@ -943,7 +943,8 @@ def operational_snapshot():
             SELECT status, route, COUNT(*) AS n, COALESCE(SUM(estimated_cost),0) AS cost
             FROM orders GROUP BY status, route
         """).fetchall()
-        status_counts = {r["status"]: int(r["n"]) for r in order_rows}
+        status_rows = c.execute("SELECT status, COUNT(*) AS n FROM orders GROUP BY status").fetchall()
+        status_counts = {r["status"]: int(r["n"]) for r in status_rows}
         route_counts = {}
         total_cost = 0.0
         total_orders = 0
@@ -1188,12 +1189,25 @@ def clear_temporary_simulation_data():
                 if row["batch_id"] is not None: batch_ids.add(int(row["batch_id"]))
 
         c.execute("DELETE FROM simulation_supply_transports")
-        # Reverse all movements whose reference belongs to one of the simulated shifts.
+        # Reverse the complete simulation ledger in strict reverse insertion order.
+        # Return movements use the return ID as reference, not the order code.
         movement_rows=[]
+        return_ids=[int(r["id"]) for r in c.execute(
+            f"SELECT id FROM returns WHERE order_id IN ({','.join('?' for _ in order_ids)})",
+            order_ids
+        ).fetchall()] if order_ids else []
         for code in run_codes:
             movement_rows.extend(c.execute(
-                """SELECT point_id,product_id,movement_type,quantity,reference
+                """SELECT id,point_id,product_id,movement_type,quantity,reference
                 FROM stock_movements WHERE reference LIKE ?""",(f"{code}-%",)).fetchall())
+        if return_ids:
+            movement_rows.extend(c.execute(
+                f"""SELECT id,point_id,product_id,movement_type,quantity,reference
+                FROM stock_movements WHERE movement_type='return'
+                AND reference IN ({','.join('?' for _ in return_ids)})""",
+                [str(rid) for rid in return_ids]
+            ).fetchall())
+        movement_rows.sort(key=lambda row: int(row["id"]), reverse=True)
         for m in movement_rows:
             q=int(m["quantity"]); pid=int(m["point_id"]); sku=int(m["product_id"]); kind=m["movement_type"]
             if kind=="reserve":
@@ -1212,18 +1226,13 @@ def clear_temporary_simulation_data():
                 c.execute("UPDATE inventory SET quantity=quantity+? WHERE point_id=? AND product_id=?",(q,pid,sku))
             elif kind=="hub_transfer_in":
                 c.execute("UPDATE inventory SET quantity=MAX(0,quantity-?) WHERE point_id=? AND product_id=?",(q,pid,sku))
+            elif kind=="return":
+                c.execute("UPDATE inventory SET quantity=MAX(0,quantity-?) WHERE point_id=? AND product_id=?",(q,pid,sku))
 
         returns=[]
         if order_ids:
             marks=",".join("?" for _ in order_ids)
             returns=c.execute(f"SELECT id,order_id FROM returns WHERE order_id IN ({marks})",order_ids).fetchall()
-            for ret in returns:
-                for m in c.execute(
-                    "SELECT point_id,product_id,quantity FROM stock_movements WHERE movement_type='return' AND reference=?",
-                    (str(ret["id"]),)
-                ):
-                    c.execute("UPDATE inventory SET quantity=MAX(0,quantity-?) WHERE point_id=? AND product_id=?",
-                              (int(m["quantity"]),int(m["point_id"]),int(m["product_id"])))
             incidents_count=c.execute(f"SELECT COUNT(*) AS n FROM incidents WHERE order_id IN ({marks})",order_ids).fetchone()["n"]
             c.execute(f"DELETE FROM incidents WHERE order_id IN ({marks})",order_ids)
             c.execute(f"DELETE FROM returns WHERE order_id IN ({marks})",order_ids)
@@ -1338,7 +1347,13 @@ def _auto_supplier_and_anchor_replenishment(tick_no, shift_code):
                            (int(hub["id"]),int(product["id"]))).fetchone()
             anchor_available=int(arow["available"] or 0) if arow else 0
             hub_available=int(hrow["available"] or 0) if hrow else 0
-            if anchor_available<=2 and hub_available>=8:
+            pending=c.execute("""SELECT COALESCE(SUM(quantity),0) AS quantity
+                FROM simulation_supply_transports
+                WHERE shift_code=? AND transport_type='Hub → Anchor'
+                AND product_id=? AND to_name=? AND status='В пути'""",
+                (shift_code,int(product["id"]),anchor["Название"])).fetchone()
+            pending_quantity=int(pending["quantity"] or 0)
+            if anchor_available + pending_quantity <= 2 and hub_available>=8:
                 qty=min(15,hub_available)
                 ref=f"{shift_code}-H2A-{tick_no:05d}-{int(product['id'])}"
                 c.execute("UPDATE inventory SET quantity=quantity-? WHERE point_id=? AND product_id=?",
@@ -1554,19 +1569,29 @@ def simulation_financials():
             return {"orders":0,"mesh_orders":0,"hub_orders":0,"mesh_trips":0,
                     "mesh_trip_cost":0.0,"mesh_variable_cost":0.0,"hub_cost":0.0,
                     "transport_total":0.0,"hub_baseline":0.0,"savings":0.0,"returns":0}
-        rows=c.execute("""SELECT route,COUNT(*) AS n,COALESCE(SUM(estimated_cost),0) AS cost
-            FROM orders WHERE order_code LIKE ? GROUP BY route""",(f"{code}-%",)).fetchall()
-        by_route={r["route"]:r for r in rows}
-        mesh_orders=int(by_route.get("Mesh",{"n":0})["n"])
-        hub_orders=sum(int(r["n"]) for route,r in by_route.items() if route!="Mesh")
-        total=mesh_orders+hub_orders
+        rows=c.execute("""SELECT
+                SUM(CASE WHEN route LIKE 'Mesh%' THEN 1 ELSE 0 END) AS mesh_orders,
+                SUM(CASE WHEN route NOT LIKE 'Mesh%' OR route IS NULL THEN 1 ELSE 0 END) AS hub_orders,
+                COUNT(*) AS total
+            FROM orders WHERE order_code LIKE ?""",(f"{code}-%",)).fetchone()
+        mesh_orders=int(rows["mesh_orders"] or 0)
+        hub_orders=int(rows["hub_orders"] or 0)
+        total=int(rows["total"] or 0)
         settings=_settings_from_db(c)
-        batches=c.execute("""SELECT COUNT(*) AS n,COALESCE(SUM(trip_cost),0) AS cost
-            FROM mesh_batches WHERE status IN ('dispatched','completed')
-            AND id IN (SELECT DISTINCT batch_id FROM orders WHERE order_code LIKE ?)""",
-            (f"{code}-%",)).fetchone()
-        trips=int(batches["n"] or 0)
-        trip_cost=float(batches["cost"] or 0)
+        batches=c.execute("""SELECT
+                SUM(CASE WHEN b.status IN ('dispatched','completed') THEN 1 ELSE 0 END) AS dispatched,
+                SUM(CASE WHEN b.status='waiting' THEN 1 ELSE 0 END) AS waiting,
+                SUM(CASE WHEN b.status IN ('dispatched','completed') THEN b.trip_cost ELSE 0 END) AS actual_cost
+            FROM mesh_batches b
+            WHERE b.status IN ('waiting','dispatched','completed')
+            AND b.id IN (
+                SELECT DISTINCT batch_id FROM orders
+                WHERE order_code LIKE ? AND route LIKE 'Mesh%'
+            )""",(f"{code}-%",)).fetchone()
+        trips=int(batches["dispatched"] or 0)
+        waiting_batches=int(batches["waiting"] or 0)
+        # Include the configured trip estimate for batches that have not dispatched yet.
+        trip_cost=float(batches["actual_cost"] or 0) + waiting_batches*float(settings["local_trip_cost"])
         variable=mesh_orders*float(settings["mesh_variable_cost"])
         hub=hub_orders*float(settings["hub_cost_per_order"])
         transport=trip_cost+variable+hub
@@ -1574,7 +1599,8 @@ def simulation_financials():
         returns=c.execute("""SELECT COUNT(*) AS n FROM returns r JOIN orders o ON o.id=r.order_id
             WHERE o.order_code LIKE ?""",(f"{code}-%",)).fetchone()["n"]
         return {"orders":total,"mesh_orders":mesh_orders,"hub_orders":hub_orders,
-                "mesh_trips":trips,"mesh_trip_cost":trip_cost,
+                "mesh_trips":trips,"mesh_waiting_batches":waiting_batches,
+                "mesh_trip_cost":trip_cost,
                 "mesh_variable_cost":variable,"hub_cost":hub,
                 "transport_total":transport,"hub_baseline":baseline,
                 "savings":baseline-transport,"returns":int(returns)}
