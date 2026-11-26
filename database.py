@@ -198,8 +198,14 @@ def settings_dict():
 
 
 def save_setting(key, value):
+    value = float(value)
+    positive_keys = {"batch_target_orders", "max_orders", "max_volume_l", "max_wait_hours", "hub_cost_per_order"}
+    if key in positive_keys and value <= 0:
+        raise ValueError("Для этого параметра значение должно быть больше нуля.")
+    if key in {"local_trip_cost", "mesh_variable_cost"} and value < 0:
+        raise ValueError("Стоимость не может быть отрицательной.")
     with db() as c:
-        cur = c.execute("UPDATE settings SET value=? WHERE key=?", (float(value), key))
+        cur = c.execute("UPDATE settings SET value=? WHERE key=?", (value, key))
         if cur.rowcount != 1:
             raise ValueError("Неизвестный параметр настройки.")
 
