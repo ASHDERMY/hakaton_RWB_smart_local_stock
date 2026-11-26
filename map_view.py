@@ -228,14 +228,38 @@ def render_logistics_map(orders: pd.DataFrame):
         order_code, status, route, cost = "DEMO-ROUTE", "Планирование", "Hub", None
     else:
         route_label = str(selected.get("Маршрут", ""))
-        source = HUB if "Hub (обход)" in route_label else _source_for_name(selected.get("Источник", ""))
+        bypass_via_hub = "Hub (обход)" in route_label
+        source = _source_for_name(selected.get("Источник", ""))
         destination = _destination_for_name(selected.get("ПВЗ назначения", ""))
         order_code = str(selected.get("Заказ", "order"))
         status = str(selected.get("Статус", "—"))
         route = str(selected.get("Маршрут", "—"))
         cost = selected.get("Оценка затрат, ₽", None)
 
-    route_data = _road_route(source["lon"], source["lat"], destination["lon"], destination["lat"])
+    if selected is not None and bypass_via_hub:
+        # Обход строится двумя дорожными плечами: исходный Anchor → Hub → ПВЗ.
+        first_leg = _road_route(source["lon"], source["lat"], HUB["lon"], HUB["lat"])
+        second_leg = _road_route(HUB["lon"], HUB["lat"], destination["lon"], destination["lat"])
+        first_coords = first_leg["coordinates"]
+        second_coords = second_leg["coordinates"]
+        route_data = {
+            "coordinates": first_coords + second_coords[1:],
+            "distance_km": (
+                first_leg["distance_km"] + second_leg["distance_km"]
+                if first_leg["distance_km"] is not None and second_leg["distance_km"] is not None
+                else None
+            ),
+            "duration_min": (
+                first_leg["duration_min"] + second_leg["duration_min"]
+                if first_leg["duration_min"] is not None and second_leg["duration_min"] is not None
+                else None
+            ),
+            "steps": (first_leg["steps"] + second_leg["steps"])[:12],
+            "provider": "OSRM / OpenStreetMap · маршрут через Hub",
+            "road_route": first_leg["road_route"] and second_leg["road_route"],
+        }
+    else:
+        route_data = _road_route(source["lon"], source["lat"], destination["lon"], destination["lat"])
     coords = route_data["coordinates"]
     midpoint = _point_at_fraction(coords, 0.5) or [source["lon"], source["lat"]]
     progress_key = f"dispatch_progress_{order_code}"
