@@ -122,6 +122,15 @@ def init_db():
             FOREIGN KEY(product_id) REFERENCES products(id),
             FOREIGN KEY(hub_point_id) REFERENCES pickup_points(id)
         );
+        CREATE TABLE IF NOT EXISTS simulation_supply_transports(
+            id INTEGER PRIMARY KEY, shift_code TEXT NOT NULL, tick_no INTEGER NOT NULL,
+            transport_type TEXT NOT NULL, reference TEXT NOT NULL, delivery_id INTEGER,
+            product_id INTEGER NOT NULL, quantity INTEGER NOT NULL,
+            from_name TEXT NOT NULL, to_name TEXT NOT NULL,
+            from_lat REAL NOT NULL, from_lon REAL NOT NULL, to_lat REAL NOT NULL, to_lon REAL NOT NULL,
+            progress REAL NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'В пути',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS simulation_control(
             id INTEGER PRIMARY KEY CHECK(id=1), running INTEGER NOT NULL DEFAULT 0,
             shift_code TEXT, tick_no INTEGER NOT NULL DEFAULT 0,
@@ -1178,6 +1187,7 @@ def clear_temporary_simulation_data():
                 order_ids.append(int(row["id"])); order_codes.append(row["order_code"])
                 if row["batch_id"] is not None: batch_ids.add(int(row["batch_id"]))
 
+        c.execute("DELETE FROM simulation_supply_transports")
         # Reverse all movements whose reference belongs to one of the simulated shifts.
         movement_rows=[]
         for code in run_codes:
@@ -1285,6 +1295,7 @@ def _simulation_event(c, shift_code, tick_no, event_type, message, order_id=None
 
 
 def _auto_supplier_and_anchor_replenishment(tick_no, shift_code):
+    """Create modelled inbound supplier and Hub-to-Anchor transport legs."""
     import random
     points=points_df()
     hubs=points[(points["Тип"]=="Hub") & (points["Активен"]==1)]
@@ -1293,38 +1304,83 @@ def _auto_supplier_and_anchor_replenishment(tick_no, shift_code):
     sellers=sellers_df()
     if hubs.empty or anchors.empty or products.empty or sellers.empty:
         return
-    hub_id=int(hubs.iloc[0]["id"])
-    # Seller -> Hub: automatic inbound replenishment on a periodic cadence.
+    hub=hubs.iloc[0]
+    anchor=anchors.iloc[0]
     if tick_no % 12 == 1:
         product=products.sample(1).iloc[0]
-        delivery_id=create_supplier_delivery(int(sellers.iloc[0]["id"]),int(product["id"]),hub_id,random.randint(12,30),
-                                              f"{shift_code}-SUP-{tick_no:05d}")
-        receive_supplier_delivery(delivery_id)
+        qty=random.randint(12,30)
+        ref=f"{shift_code}-SUP-{tick_no:05d}"
+        delivery_id=create_supplier_delivery(int(sellers.iloc[0]["id"]),int(product["id"]),
+                                              int(hub["id"]),qty,ref)
         with db() as c:
-            _simulation_event(c,shift_code,tick_no,"Поставка продавца → Hub",
-                              f"Продавец {sellers.iloc[0]['Продавец']} поставил {int(product['id'])} SKU на Hub; поставка принята",None)
-    # Hub -> Anchor: transfer stock when the local buffer is low.
-    anchor=anchors.iloc[0]
+            c.execute("""INSERT INTO simulation_supply_transports(
+                shift_code,tick_no,transport_type,reference,delivery_id,product_id,quantity,
+                from_name,to_name,from_lat,from_lon,to_lat,to_lon)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (shift_code,tick_no,"Продавец → Hub",ref,delivery_id,int(product["id"]),qty,
+                 "Поставщик (условная точка)",hub["Название"],55.76,49.12,
+                 55.848721,48.842408))
+            _simulation_event(c,shift_code,tick_no,"Поставка продавца",
+                              f"Продавец отправил {qty} ед. {product['SKU']} на Hub; машина в пути")
+    # Reserve goods at Hub for a modelled Hub -> Anchor replenishment transport.
     for _,product in products.iterrows():
         with db() as c:
             c.execute("INSERT OR IGNORE INTO inventory(point_id,product_id,quantity) VALUES(?,?,0)",
                       (int(anchor["id"]),int(product["id"])))
-            a=c.execute("SELECT quantity-reserved AS available FROM inventory WHERE point_id=? AND product_id=?",
-                        (int(anchor["id"]),int(product["id"]))).fetchone()["available"]
-            h=c.execute("SELECT quantity-reserved AS available FROM inventory WHERE point_id=? AND product_id=?",
-                        (hub_id,int(product["id"]))).fetchone()
-            havailable=int(h["available"]) if h else 0
-            if int(a)<=2 and havailable>=8:
-                qty=min(15,havailable)
-                c.execute("UPDATE inventory SET quantity=quantity-? WHERE point_id=? AND product_id=?",(qty,hub_id,int(product["id"])))
-                c.execute("UPDATE inventory SET quantity=quantity+? WHERE point_id=? AND product_id=?",(qty,int(anchor["id"]),int(product["id"])))
+            arow=c.execute("SELECT quantity-reserved AS available FROM inventory WHERE point_id=? AND product_id=?",
+                           (int(anchor["id"]),int(product["id"]))).fetchone()
+            hrow=c.execute("SELECT quantity-reserved AS available FROM inventory WHERE point_id=? AND product_id=?",
+                           (int(hub["id"]),int(product["id"]))).fetchone()
+            if int(arow["available"])<=2 and int(hrow["available"] or 0)>=8:
+                qty=min(15,int(hrow["available"]))
                 ref=f"{shift_code}-H2A-{tick_no:05d}-{int(product['id'])}"
-                c.execute("INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note) VALUES(?,?,?,?,?,?)",
-                          (hub_id,int(product["id"]),"hub_transfer_out",qty,ref,"Автоматическое пополнение Anchor из Hub"))
-                c.execute("INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note) VALUES(?,?,?,?,?,?)",
-                          (int(anchor["id"]),int(product["id"]),"hub_transfer_in",qty,ref,"Автоматическое пополнение Anchor из Hub"))
-                _simulation_event(c,shift_code,tick_no,"Hub → Anchor",
-                                  f"Перемещено {qty} ед. {product['SKU']} со склада Hub на {anchor['Название']}")
+                c.execute("UPDATE inventory SET quantity=quantity-? WHERE point_id=? AND product_id=?",
+                          (qty,int(hub["id"]),int(product["id"])))
+                c.execute("""INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note)
+                    VALUES(?,?,?,?,?,?)""",
+                    (int(hub["id"]),int(product["id"]),"hub_transfer_out",qty,ref,
+                     "Отправка пополнения Hub → Anchor"))
+                c.execute("""INSERT INTO simulation_supply_transports(
+                    shift_code,tick_no,transport_type,reference,product_id,quantity,
+                    from_name,to_name,from_lat,from_lon,to_lat,to_lon)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (shift_code,tick_no,"Hub → Anchor",ref,int(product["id"]),qty,
+                     hub["Название"],anchor["Название"],55.848721,48.842408,
+                     56.631364,47.890917))
+                _simulation_event(c,shift_code,tick_no,"Пополнение Anchor",
+                                  f"Из Hub отправлено {qty} ед. {product['SKU']} на {anchor['Название']}")
+
+
+def _advance_supply_transports(shift_code,tick_no):
+    import random
+    with db() as c:
+        rows=c.execute("""SELECT * FROM simulation_supply_transports
+            WHERE shift_code=? AND status='В пути' ORDER BY id LIMIT 30""",(shift_code,)).fetchall()
+    for row in rows:
+        with db() as c:
+            progress=min(1.0,float(row["progress"])+random.uniform(0.18,0.32))
+            status="Прибыла" if progress>=1 else "В пути"
+            c.execute("UPDATE simulation_supply_transports SET progress=?,status=? WHERE id=?",
+                      (progress,status,row["id"]))
+        if progress>=1:
+            if row["transport_type"]=="Продавец → Hub":
+                receive_supplier_delivery(int(row["delivery_id"]))
+            else:
+                with db() as c:
+                    c.execute("INSERT OR IGNORE INTO inventory(point_id,product_id,quantity) VALUES((SELECT id FROM pickup_points WHERE name=?),?,0)",
+                              (row["to_name"],row["product_id"]))
+                    dest=c.execute("SELECT id FROM pickup_points WHERE name=?",(row["to_name"],)).fetchone()
+                    if dest:
+                        c.execute("UPDATE inventory SET quantity=quantity+? WHERE point_id=? AND product_id=?",
+                                  (row["quantity"],dest["id"],row["product_id"]))
+                        c.execute("""INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note)
+                            VALUES(?,?,?,?,?,?)""",
+                            (dest["id"],row["product_id"],"hub_transfer_in",row["quantity"],row["reference"],
+                             "Прибытие пополнения Hub → Anchor"))
+            with db() as c:
+                _simulation_event(c,shift_code,tick_no,"Прибытие поставки",
+                                  f"{row['transport_type']}: груз {row['quantity']} ед. прибыл в {row['to_name']}")
+
 
 
 def continuous_simulation_tick():
@@ -1339,6 +1395,7 @@ def continuous_simulation_tick():
         tick_no=int(state["tick_no"])+1
         c.execute("UPDATE simulation_control SET tick_no=?,updated_at=CURRENT_TIMESTAMP WHERE id=1",(tick_no,))
     _auto_supplier_and_anchor_replenishment(tick_no,shift_code)
+    _advance_supply_transports(shift_code,tick_no)
 
     # Generate one order per tick; the regular order engine decides Mesh vs Hub.
     created_id=None
@@ -1455,18 +1512,28 @@ def simulation_timeline_df(limit=100):
 
 def simulation_vehicles_df():
     with db() as c:
-        return pd.read_sql_query("""SELECT o.id,o.order_code AS Заказ,o.route AS Маршрут,
+        orders=pd.read_sql_query("""SELECT o.id,o.order_code AS Заказ,o.route AS Маршрут,
             o.status AS Статус,o.estimated_cost AS 'Затраты, ₽',
             src.name AS Источник,dst.name AS Назначение,
             src.city AS Город_источника,dst.city AS Город_назначения,
             COALESCE(v.progress,0) AS Прогресс,
-            CASE WHEN src.point_type='Hub' THEN 'Hub' ELSE 'Anchor' END AS Тип_источника
+            CASE WHEN src.point_type='Hub' THEN 'Hub' ELSE 'Anchor' END AS Тип_источника,
+            NULL AS source_lat,NULL AS source_lon,NULL AS dest_lat,NULL AS dest_lon
             FROM orders o JOIN pickup_points src ON src.id=o.source_point_id
             JOIN pickup_points dst ON dst.id=o.destination_point_id
             LEFT JOIN simulation_vehicle_progress v ON v.order_id=o.id
             WHERE o.status='В пути' AND o.order_code LIKE
               (SELECT shift_code || '-%' FROM simulation_control WHERE id=1)
             ORDER BY o.id DESC LIMIT 40""",c)
+        supplies=pd.read_sql_query("""SELECT id,reference AS Заказ,transport_type AS Маршрут,
+            status AS Статус,0.0 AS 'Затраты, ₽',from_name AS Источник,to_name AS Назначение,
+            '' AS Город_источника,'' AS Город_назначения,progress AS Прогресс,
+            'Supply' AS Тип_источника,from_lat AS source_lat,from_lon AS source_lon,
+            to_lat AS dest_lat,to_lon AS dest_lon
+            FROM simulation_supply_transports WHERE status='В пути'
+            AND shift_code=(SELECT shift_code FROM simulation_control WHERE id=1)
+            ORDER BY id DESC LIMIT 20""",c)
+        return pd.concat([orders,supplies],ignore_index=True)
 
 
 
