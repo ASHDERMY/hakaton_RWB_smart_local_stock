@@ -154,24 +154,38 @@ class ExtendedWorkflowTests(unittest.TestCase):
         self.assertAlmostEqual(finance["mesh_trip_cost"], self.settings["local_trip_cost"])
         database.stop_continuous_simulation()
 
-    def test_day_150_prepares_mature_stock_without_overwriting_existing_balances(self):
-        # Start with zero stock in the demo Anchor and Hub.
-        with database.db() as conn:
-            conn.execute("UPDATE inventory SET quantity=0,reserved=0,incoming=0")
-        baseline = database.prepare_mature_simulation()
-        self.assertGreater(baseline["opening_units"], 0)
-        inventory = database.inventory_df()
-        anchor = inventory[inventory["Тип"] == "Anchor"]
-        hub = inventory[inventory["Тип"] == "Hub"]
-        self.assertTrue((anchor["Остаток"] > 0).all())
-        self.assertTrue((hub["Остаток"] > 0).all())
+    def test_day_150_builds_6000_historical_orders_and_is_idempotent(self):
+        history = database.prepare_mature_simulation()
+        self.assertEqual(history["day_count"], 150)
+        self.assertEqual(history["orders_count"], 6000)
+        self.assertEqual(history["hub_orders"], 6000)
+        self.assertEqual(history["mesh_orders"], 0)
+        self.assertAlmostEqual(history["baseline_cost"], 6000 * 62)
+        self.assertAlmostEqual(history["system_cost"], 50000)
 
-        # A second preparation must not top up or overwrite already prepared stock.
-        before = inventory[["ПВЗ", "SKU", "Остаток"]].sort_values(["ПВЗ", "SKU"]).reset_index(drop=True)
+        with database.db() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS n FROM orders WHERE order_code LIKE 'H150-D%'"
+            ).fetchone()["n"]
+            issued = conn.execute(
+                "SELECT COUNT(*) AS n FROM orders WHERE order_code LIKE 'H150-D%' AND status='Выдан'"
+            ).fetchone()["n"]
+            days = conn.execute("SELECT COUNT(*) AS n FROM simulation_history_days").fetchone()["n"]
+            movements = conn.execute(
+                "SELECT COUNT(*) AS n FROM stock_movements WHERE reference LIKE 'H150-D%'"
+            ).fetchone()["n"]
+        self.assertEqual(count, 6000)
+        self.assertEqual(issued, 6000)
+        self.assertEqual(days, 150)
+        self.assertEqual(movements, 18000)
+
         second = database.prepare_mature_simulation()
-        after = database.inventory_df()[["ПВЗ", "SKU", "Остаток"]].sort_values(["ПВЗ", "SKU"]).reset_index(drop=True)
-        self.assertEqual(second["opening_units"], 0)
-        self.assertEqual(before.to_dict("records"), after.to_dict("records"))
+        self.assertEqual(second["orders_count"], 6000)
+        with database.db() as conn:
+            count_after = conn.execute(
+                "SELECT COUNT(*) AS n FROM orders WHERE order_code LIKE 'H150-D%'"
+            ).fetchone()["n"]
+        self.assertEqual(count_after, 6000)
 
     def test_continuous_simulation_can_start_at_day_150(self):
         code = database.start_continuous_simulation(start_day=150)
