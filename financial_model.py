@@ -133,16 +133,18 @@ def break_even_anchor_fee(
     return_rate_pct=0.0,
     return_cost=0.0,
     monthly_system_cost=10000.0,
+    mesh_share_pct=100.0,
 ):
     demand = max(1, int(orders_per_month))
     anchors = max(1, int(anchors))
+    mesh_orders = max(1, int(round(demand * max(0.0, min(100.0, float(mesh_share_pct))) / 100.0)))
     capacity = max(1, min(int(max_orders), int(float(max_volume_l) // max(float(avg_order_volume_l), 0.000001))))
     batch_orders = max(1, min(int(batch_orders), capacity))
-    trips = anchors * ceil((demand / anchors) / batch_orders)
-    transport = trips * float(trip_cost) / demand
+    trips = anchors * ceil((mesh_orders / anchors) / batch_orders)
+    transport = trips * float(trip_cost) / mesh_orders
     risk = float(return_rate_pct) / 100.0 * float(return_cost)
     return (
         float(hub_cost_per_order) - transport - float(variable_cost)
         - float(replenishment_per_order) - float(storage_per_order)
-        - float(handling_per_order) - risk - float(monthly_system_cost) / demand
+        - float(handling_per_order) - risk - float(monthly_system_cost) / mesh_orders
     )
