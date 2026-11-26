@@ -7,7 +7,8 @@ from database import (
     settings_dict, save_setting, add_product, receive_stock, create_order,
     update_order_status, create_return, process_return, returns_df,
     movements_df, incidents_df, add_incident, finance_summary,
-    mesh_batches_df, process_mesh_batches
+    mesh_batches_df, process_mesh_batches, sellers_df, supplier_deliveries_df,
+    create_seller, create_supplier_delivery, receive_supplier_delivery
 )
 
 st.set_page_config(page_title="Smart Local Stock", page_icon="📦", layout="wide")
@@ -33,8 +34,8 @@ st.title("📦 Smart Local Stock")
 st.caption("Локальный запас → консолидация → выбор Mesh или Hub → доставка в ПВЗ → выдача. Расчётные тарифы помечены как гипотезы.")
 with st.sidebar:
     page=st.radio("Рабочие разделы",[
-        "Панель управления","Карта логистики","Товары и ПВЗ","Склад и приёмка","Заказы","Партии Mesh","Возвраты",
-        "Инциденты","Экономика участников","Финансы","Настройки модели","Журнал операций"
+        "Панель управления","Карта логистики","Товары и ПВЗ","Склад и приёмка","Продавцы и поставки",
+        "Заказы","Партии Mesh","Возвраты","Инциденты","Экономика участников","Финансы","Настройки модели","Журнал операций"
     ])
     st.divider()
     if st.button("Загрузить демонстрационные данные",use_container_width=True):
@@ -86,16 +87,42 @@ elif page=="Склад и приёмка":
     inv_data=inventory_df()
     st.dataframe(inv_data,use_container_width=True,hide_index=True)
     products=products_df(); points=points_df()
-    if products.empty or points.empty:
-        st.warning("Сначала добавьте товары и точки или загрузите демоданные.")
+    active_points = points[points["Активен"] == 1] if not points.empty else points
+    anchors_storage = active_points[active_points["Тип"] == "Anchor"]
+    if products.empty or active_points.empty:
+        st.warning("Сначала добавьте товары и активные точки или загрузите демоданные.")
     else:
+        st.markdown("#### Размещение товара на опорном ПВЗ (Anchor)")
+        st.caption("Выбери конкретный Anchor: поступление будет записано именно в его остаток, а не в автоматически выбранную точку.")
+        if anchors_storage.empty:
+            st.warning("В сети пока нет активного Anchor. Добавь точку типа Anchor в разделе «Товары и ПВЗ».")
+        else:
+            with st.form("anchor_storage_form"):
+                anchor_map = dict(zip(
+                    anchors_storage["Название"] + " · " + anchors_storage["Город"] + " · ID " + anchors_storage["id"].astype(str),
+                    anchors_storage["id"]
+                ))
+                product_map = dict(zip(products["Товар"] + " · " + products["SKU"], products["id"]))
+                chosen_anchor = st.selectbox("Опорный ПВЗ для хранения", list(anchor_map), key="storage_anchor_choice")
+                chosen_product = st.selectbox("Товар для размещения", list(product_map), key="storage_anchor_product")
+                anchor_qty = st.number_input("Количество для размещения", min_value=1, value=20, key="storage_anchor_qty")
+                anchor_note = st.text_input("Основание операции", "Размещение запаса продавца на Anchor", key="storage_anchor_note")
+                anchor_submit = st.form_submit_button("Разместить товар на выбранном Anchor")
+                if anchor_submit:
+                    show_error(lambda: receive_stock(anchor_map[chosen_anchor], product_map[chosen_product], int(anchor_qty), anchor_note))
+
+        st.divider()
+        st.markdown("#### Обычная приёмка на любую точку, включая Hub")
         with st.form("receipt_form"):
-            pmap=dict(zip(products["Товар"],products["id"]))
-            ptmap=dict(zip(points["Название"]+" · "+points["Тип"],points["id"]))
-            prod=st.selectbox("Товар",list(pmap))
-            point=st.selectbox("Точка приёмки",list(ptmap))
-            qty=st.number_input("Количество к приёмке",min_value=1,value=20)
-            note=st.text_input("Комментарий","Поставка / пополнение")
+            pmap=dict(zip(products["Товар"] + " · " + products["SKU"],products["id"]))
+            ptmap=dict(zip(
+                active_points["Название"]+" · "+active_points["Тип"]+" · ID "+active_points["id"].astype(str),
+                active_points["id"]
+            ))
+            prod=st.selectbox("Товар",list(pmap), key="receipt_product")
+            point=st.selectbox("Точка приёмки",list(ptmap), key="receipt_point")
+            qty=st.number_input("Количество к приёмке",min_value=1,value=20,key="receipt_qty")
+            note=st.text_input("Комментарий","Поставка / пополнение",key="receipt_note")
             ok=st.form_submit_button("Принять товар")
             if ok: show_error(lambda:receive_stock(ptmap[point],pmap[prod],int(qty),note))
 
@@ -271,19 +298,93 @@ elif page=="Возвраты":
                 if process: show_error(lambda:process_return(int(rid),condition))
 
 elif page=="Инциденты":
-    st.subheader("Регистрация логистических ошибок")
+    st.subheader("Диспетчер инцидентов и перестроение маршрута")
+    st.caption("Система анализирует описание по правилам MVP, формирует план действий и при подходящем сценарии меняет маршрут заказа. Это алгоритм принятия решений, не подключённая LLM и не команда реальному перевозчику.")
     od=orders_df()
     with st.form("incident_form"):
-        ids=[None]+(od["id"].tolist() if not od.empty else [])
-        order_id=st.selectbox("Связанный заказ (необязательно)",ids)
-        category=st.selectbox("Категория",["Задержка","Повреждение","Потеря","Ошибка маршрута","Неуспешная передача","Другое"])
-        description=st.text_area("Описание")
-        ok=st.form_submit_button("Зарегистрировать инцидент")
-        if ok: show_error(lambda:add_incident(order_id,category,description))
-    st.markdown("#### Журнал инцидентов")
+        order_options = {"Без привязки к заказу": None}
+        if not od.empty:
+            order_options.update({
+                f"{row['Заказ']} · {row['Маршрут']} · {row['Статус']}": int(row["id"])
+                for _, row in od.iterrows()
+            })
+        selected_order = st.selectbox("Заказ, затронутый инцидентом", list(order_options))
+        category=st.selectbox("Категория",["Задержка","Перекрытие дороги","Авария / поломка транспорта","Ошибка маршрута","Повреждение","Потеря","Неуспешная передача","Другое"])
+        description=st.text_area("Описание происшествия", placeholder="Например: дорога на прямом участке Anchor → ПВЗ перекрыта из-за аварии, проезд невозможен.")
+        ok=st.form_submit_button("Проанализировать инцидент и построить план")
+        if ok:
+            result = show_error(lambda:add_incident(order_options[selected_order],category,description))
+            if result:
+                st.markdown("#### Сформированный план")
+                st.write(result["action_plan"])
+                if result["applied"]:
+                    st.success(f"Маршрут заказа автоматически изменён на: {result['applied_route']}. Открой карту логистики для просмотра нового плеча через Hub.")
+                else:
+                    st.info("Маршрут автоматически не менялся: требуется проверка оператора или инцидент не влияет на маршрут.")
+    st.markdown("#### Журнал инцидентов и принятые решения")
     inc=incidents_df()
     if inc.empty: st.info("Инцидентов пока нет.")
     else: st.dataframe(inc,use_container_width=True,hide_index=True)
+
+
+elif page=="Продавцы и поставки":
+    st.subheader("Кабинет продавца: поставка товара в Hub")
+    st.caption("Пример продавца и поставки для демонстрации сквозного процесса. Продавец и контакт ниже — демонстрационные, не реальные партнёры RWB.")
+    seller_data=sellers_df()
+    if seller_data.empty:
+        st.info("Создай продавца, чтобы оформить поставку.")
+    else:
+        st.markdown("#### Продавцы")
+        st.dataframe(seller_data,use_container_width=True,hide_index=True)
+    with st.expander("Добавить продавца"):
+        with st.form("seller_form"):
+            seller_name=st.text_input("Название продавца")
+            seller_category=st.text_input("Категория товара")
+            seller_contact=st.text_input("Контакт / email")
+            seller_submit=st.form_submit_button("Создать продавца")
+            if seller_submit:
+                show_error(lambda:create_seller(seller_name,seller_category,seller_contact))
+
+    products=sellers_products=products_df()
+    points=points_df()
+    hubs=points[(points["Тип"]=="Hub") & (points["Активен"]==1)] if not points.empty else points
+    seller_data=sellers_df()
+    if not seller_data.empty and not products.empty and not hubs.empty:
+        seller_map=dict(zip(seller_data["Продавец"]+" · ID "+seller_data["id"].astype(str),seller_data["id"]))
+        product_map=dict(zip(products["Товар"]+" · "+products["SKU"],products["id"]))
+        hub_map=dict(zip(hubs["Название"]+" · "+hubs["Город"],hubs["id"]))
+        with st.form("supplier_delivery_form"):
+            seller_choice=st.selectbox("Продавец",list(seller_map))
+            product_choice=st.selectbox("Товар",list(product_map))
+            hub_choice=st.selectbox("Склад Hub-получатель",list(hub_map))
+            supply_qty=st.number_input("Количество в поставке",min_value=1,value=100)
+            supply_ref=st.text_input("Номер накладной","DEMO-SUPPLY-001")
+            delivery_submit=st.form_submit_button("Оформить поставку продавца в Hub")
+            if delivery_submit:
+                show_error(lambda:create_supplier_delivery(seller_map[seller_choice],product_map[product_choice],hub_map[hub_choice],int(supply_qty),supply_ref))
+    else:
+        st.warning("Для поставки нужны активный продавец, товар и точка типа Hub. Добавь демоданные или создай недостающие сущности.")
+
+    st.markdown("#### Поставки и приёмка на Hub")
+    deliveries=supplier_deliveries_df()
+    if deliveries.empty:
+        st.info("Поставок пока нет.")
+    else:
+        st.dataframe(deliveries,use_container_width=True,hide_index=True)
+        pending=deliveries[deliveries["Статус"]=="Ожидает приёмки"]
+        if not pending.empty:
+            delivery_map=dict(zip(pending["ID"].astype(str)+" · "+pending["Продавец"]+" · "+pending["SKU"],pending["ID"]))
+            with st.form("receive_supplier_delivery_form"):
+                delivery_choice=st.selectbox("Поставка к приёмке",list(delivery_map))
+                receive_submit=st.form_submit_button("Принять поставку на склад Hub")
+                if receive_submit:
+                    show_error(lambda:receive_supplier_delivery(int(delivery_map[delivery_choice])))
+
+    st.markdown("#### Остатки на Hub")
+    hub_inventory=inventory_df()
+    hub_inventory=hub_inventory[hub_inventory["Тип"]=="Hub"] if not hub_inventory.empty else hub_inventory
+    if hub_inventory.empty: st.info("На Hub пока нет товарных остатков.")
+    else: st.dataframe(hub_inventory,use_container_width=True,hide_index=True)
 
 
 elif page=="Экономика участников":
