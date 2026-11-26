@@ -83,7 +83,8 @@ elif page=="Товары и ПВЗ":
 
 elif page=="Склад и приёмка":
     st.subheader("Остатки и операции приёмки")
-    st.dataframe(inventory_df(),use_container_width=True,hide_index=True)
+    inv_data=inventory_df()
+    st.dataframe(inv_data,use_container_width=True,hide_index=True)
     products=products_df(); points=points_df()
     if products.empty or points.empty:
         st.warning("Сначала добавьте товары и точки или загрузите демоданные.")
