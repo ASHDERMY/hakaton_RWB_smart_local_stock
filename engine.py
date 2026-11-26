@@ -73,7 +73,7 @@ def evaluate_batch(
         )
         return {
             "decision": "mesh",
-            "reason": f"{trigger} Полная расчётная стоимость Mesh ниже Hub.",
+            "reason": f"{trigger} Расчётные транспортные затраты Mesh ниже Hub.",
             "mesh_cost_per_order": mesh_cost_per_order,
         }
 
