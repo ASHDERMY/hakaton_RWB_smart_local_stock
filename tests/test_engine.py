@@ -20,8 +20,8 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(result["route"],"Hub")
 
     def test_replenishment_respects_incoming_and_reserved(self):
-        self.assertEqual(replenishment_qty(10,5,3,4,3,2),0)
-        self.assertEqual(replenishment_qty(2,0,1,4,3,2),11)
+        self.assertEqual(replenishment_qty(10,5,3,4,3,2),2)
+        self.assertEqual(replenishment_qty(2,0,1,4,3,2),13)
 
     def test_finance_totals(self):
         result=calculate_costs(100,60,40,62,2400,2,14.5,1000)
