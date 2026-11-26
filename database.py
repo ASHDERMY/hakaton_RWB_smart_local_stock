@@ -121,19 +121,6 @@ def init_db():
             ("max_wait_hours", 5, "часов", "Проектное ограничение", "Максимальное ожидание накопления; не является SLA"),
         ]
         c.executemany("INSERT OR IGNORE INTO settings VALUES(?,?,?,?,?)", defaults)
-        # Реальные городские ПВЗ для геодемонстрации. Не меняем существующие точки и остатки.
-        city_points = [
-            ("WB ПВЗ · Воинов-Интернационалистов, 34", "Обычный", "Йошкар-Ола"),
-            ("WB ПВЗ · Советская, 97", "Обычный", "Йошкар-Ола"),
-            ("WB ПВЗ · Ленинский проспект, 16А", "Обычный", "Йошкар-Ола"),
-            ("WB ПВЗ · Красноармейская, 115", "Обычный", "Йошкар-Ола"),
-            ("WB ПВЗ · Кремлёвская, 20", "Обычный", "Йошкар-Ола"),
-        ]
-        for point_name, point_type, city in city_points:
-            c.execute(
-                "INSERT INTO pickup_points(name,point_type,city) SELECT ?,?,? WHERE NOT EXISTS (SELECT 1 FROM pickup_points WHERE name=?)",
-                (point_name, point_type, city, point_name)
-            )
 
 
 def seed_demo():
@@ -198,6 +185,24 @@ def seed_demo():
                 for point_name, sku, quantity in stock_specs
             ],
         )
+
+        # Add map-only city demo points after core demo points so fresh test DBs
+        # keep the expected core records; existing IDs are never overwritten.
+        city_points = [
+            ("WB ПВЗ · Воинов-Интернационалистов, 34", "Обычный", "Йошкар-Ола"),
+            ("WB ПВЗ · Советская, 97", "Обычный", "Йошкар-Ола"),
+            ("WB ПВЗ · Ленинский проспект, 16А", "Обычный", "Йошкар-Ола"),
+            ("WB ПВЗ · Красноармейская, 115", "Обычный", "Йошкар-Ола"),
+            ("WB ПВЗ · Кремлёвская, 20", "Обычный", "Йошкар-Ола"),
+        ]
+        for point_name, point_type, city in city_points:
+            c.execute(
+                """INSERT INTO pickup_points(name,point_type,city)
+                SELECT ?,?,? WHERE NOT EXISTS (
+                    SELECT 1 FROM pickup_points WHERE name=?
+                )""",
+                (point_name, point_type, city, point_name),
+            )
 
 
 def products_df():
