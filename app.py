@@ -724,17 +724,17 @@ elif page=="Экономика участников":
     n1, n2, n3 = st.columns(3)
     with n1:
         trip_cost = st.number_input("Рейс Anchor → ПВЗ, ₽", min_value=0.0, value=float(cfg["local_trip_cost"]), step=100.0, key="stake_trip")
-        batch_n = st.number_input("Заказов в партии", min_value=1, max_value=int(cfg["max_orders"]), value=min(80, int(cfg["max_orders"])), key="stake_batch")
+        batch_n = st.number_input("Заказов в партии", min_value=1, max_value=int(cfg["max_orders"]), value=min(int(cfg["batch_target_orders"]), int(cfg["max_orders"])), key="stake_batch")
     with n2:
         hub_cost = st.number_input("Сравнительная стоимость Hub, ₽/заказ", min_value=0.0, value=float(cfg["hub_cost_per_order"]), step=1.0, key="stake_hub")
         variable = st.number_input("Переменные Mesh, ₽/заказ", min_value=0.0, value=float(cfg["mesh_variable_cost"]), step=0.5, key="stake_var")
     with n3:
-        pvz_reward = st.number_input("Доплата Anchor сверх базового тарифа, ₽/заказ", min_value=0.0, value=3.5, step=0.5, key="stake_pvz")
-        storage_cost = st.number_input("Хранение, ₽/заказ", min_value=0.0, value=2.5, step=0.5, key="stake_storage")
+        pvz_reward = st.number_input("Доплата Anchor сверх базового тарифа, ₽/заказ", min_value=0.0, value=float(cfg["anchor_fee_per_order"]), step=0.5, key="stake_pvz")
+        storage_cost = st.number_input("Хранение, ₽/заказ", min_value=0.0, value=float(cfg["storage_per_order"]), step=0.5, key="stake_storage")
 
-    replenishment_cost = st.number_input("Пополнение Anchor, ₽/заказ", min_value=0.0, value=9.0, step=0.5, key="stake_replenishment")
-    system_monthly = st.number_input("Система, ₽/месяц", min_value=0.0, value=10000.0, step=1000.0, key="stake_system_monthly")
-    system_orders = st.number_input("Заказов в месяц для распределения системы", min_value=1, value=1200, step=100, key="stake_system_orders")
+    replenishment_cost = st.number_input("Пополнение Anchor, ₽/заказ", min_value=0.0, value=float(cfg["replenishment_per_order"]), step=0.5, key="stake_replenishment")
+    system_monthly = st.number_input("Система, ₽/месяц", min_value=0.0, value=float(cfg["monthly_system_cost"]), step=1000.0, key="stake_system_monthly")
+    system_orders = st.number_input("Заказов в месяц для распределения системы", min_value=1, value=int(cfg["monthly_orders_forecast"]), step=100, key="stake_system_orders")
     mesh_transport = trip_cost / batch_n + variable
     system_per_order = system_monthly / system_orders
     marketplace_delta = hub_cost - mesh_transport - pvz_reward - storage_cost - replenishment_cost - system_per_order
