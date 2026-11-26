@@ -327,6 +327,13 @@ elif page=="Карта логистики":
                 variable_cost_per_order=float(route_settings["mesh_variable_cost"]),
                 hub_cost_per_order=float(route_settings["hub_cost_per_order"]),
                 max_detour_km=detour_limit,
+                additional_cost_per_order=(
+                    float(route_settings.get("anchor_fee_per_order", 0.0))
+                    + float(route_settings.get("replenishment_per_order", 0.0))
+                    + float(route_settings.get("storage_per_order", 0.0))
+                    + float(route_settings.get("monthly_system_cost", 0.0))
+                      / max(float(route_settings.get("monthly_orders_forecast", 1200.0)), 1.0)
+                ),
             )
             routes = plan["routes"]
             m1, m2, m3, m4 = st.columns(4)
