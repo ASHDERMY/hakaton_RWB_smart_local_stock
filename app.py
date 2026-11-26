@@ -44,6 +44,19 @@ with st.sidebar:
         st.success("Демоданные добавлены. Повторное нажатие не дублирует записи.")
     st.caption("Локальная база SQLite")
 
+# Background fragment keeps the simulation advancing even when the operator opens another page.
+_background_state, _ = simulation_state()
+@st.fragment(run_every="2s" if _background_state["running"] else None)
+def _continuous_simulation_runner():
+    state, _ = simulation_state()
+    if state["running"]:
+        try:
+            continuous_simulation_tick()
+        except Exception as exc:
+            st.error(f"Симуляция остановлена из-за ошибки: {exc}")
+            stop_continuous_simulation()
+_continuous_simulation_runner()
+
 if page=="Оперативный центр":
     st.subheader("Оперативный центр логистической сети")
     st.caption("Единый экран диспетчера: заказы, запасы, партии, происшествия, поставки, возвраты и расчётные финансы. Все показатели берутся из текущей SQLite-базы.")
@@ -74,12 +87,6 @@ if page=="Оперативный центр":
     @st.fragment(run_every="2s" if sim_state["running"] else None)
     def live_dispatch_fragment():
         current, _ = simulation_state()
-        if current["running"]:
-            try:
-                continuous_simulation_tick()
-            except Exception as exc:
-                st.error(f"Ошибка такта симуляции: {exc}")
-                stop_continuous_simulation()
         current, _ = simulation_state()
         snap_live = operational_snapshot()
         live_status = snap_live["status_counts"]
