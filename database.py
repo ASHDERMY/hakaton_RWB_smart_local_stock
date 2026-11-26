@@ -101,6 +101,27 @@ def init_db():
             FOREIGN KEY(anchor_point_id) REFERENCES pickup_points(id),
             FOREIGN KEY(destination_point_id) REFERENCES pickup_points(id)
         );
+        CREATE TABLE IF NOT EXISTS sellers(
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            category TEXT NOT NULL DEFAULT '',
+            contact TEXT NOT NULL DEFAULT '',
+            active INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE IF NOT EXISTS supplier_deliveries(
+            id INTEGER PRIMARY KEY,
+            seller_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            hub_point_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL CHECK(quantity > 0),
+            status TEXT NOT NULL DEFAULT 'Ожидает приёмки',
+            reference TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            received_at TEXT,
+            FOREIGN KEY(seller_id) REFERENCES sellers(id),
+            FOREIGN KEY(product_id) REFERENCES products(id),
+            FOREIGN KEY(hub_point_id) REFERENCES pickup_points(id)
+        );
         """)
         # Миграции для SQLite-баз, созданных предыдущими версиями MVP.
         _add_column(c, "pickup_points", "active INTEGER NOT NULL DEFAULT 1")
@@ -108,6 +129,9 @@ def init_db():
         _add_column(c, "orders", "estimated_cost REAL NOT NULL DEFAULT 0")
         _add_column(c, "orders", "updated_at TEXT")
         _add_column(c, "orders", "batch_id INTEGER")
+        _add_column(c, "incidents", "action_plan TEXT")
+        _add_column(c, "incidents", "applied_route TEXT")
+        _add_column(c, "incidents", "applied INTEGER NOT NULL DEFAULT 0")
         c.execute("CREATE INDEX IF NOT EXISTS idx_orders_batch_status ON orders(batch_id,status)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_batches_status_created ON mesh_batches(status,created_at)")
 
@@ -673,16 +697,160 @@ def movements_df():
 def incidents_df():
     with db() as c:
         return pd.read_sql_query(
-            "SELECT id,order_id AS 'ID заказа',category AS Категория,description AS Описание,status AS Статус,created_at AS Дата FROM incidents ORDER BY id DESC", c
+            """SELECT id,order_id AS 'ID заказа',category AS Категория,
+            description AS Описание,action_plan AS 'План действий',
+            applied_route AS 'Новый маршрут',status AS Статус,
+            created_at AS Дата FROM incidents ORDER BY id DESC""", c
         )
 
 
 def add_incident(order_id, category, description):
-    if not description.strip():
+    description = (description or "").strip()
+    if not description:
         raise ValueError("Добавьте описание инцидента.")
+
     with db() as c:
-        c.execute("INSERT INTO incidents(order_id,category,description) VALUES(?,?,?)",
-                  (order_id, category, description.strip()))
+        order = None
+        if order_id is not None:
+            order = c.execute("SELECT * FROM orders WHERE id=?", (int(order_id),)).fetchone()
+            if not order:
+                raise ValueError("Связанный заказ не найден.")
+
+        text = f"{category} {description}".lower()
+        route_problem = any(word in text for word in (
+            "перекры", "закрыт", "пробк", "авари", "задерж", "опоздан",
+            "непроезд", "ремонт", "маршрут", "полом"
+        ))
+        action_plan = "Зафиксировать инцидент, проверить товар и связаться с ответственным ПВЗ."
+        applied_route = None
+        applied = 0
+
+        if order and route_problem and order["status"] == "В пути":
+            hub = c.execute(
+                "SELECT * FROM pickup_points WHERE point_type='Hub' AND active=1 ORDER BY id LIMIT 1"
+            ).fetchone()
+            if hub and order["route"] and "Mesh" in order["route"]:
+                action_plan = (
+                    f"1. Исключить проблемный прямой участок Anchor → ПВЗ. "
+                    f"2. Направить транспорт через транзитный узел {hub['name']}. "
+                    "3. Пересчитать дорожный путь до ПВЗ назначения. "
+                    "4. Уведомить оператора и подтвердить новое время прибытия. "
+                    "Это сценарное перенаправление через Hub, а не команда реальному перевозчику."
+                )
+                applied_route = "Hub (обход)"
+                c.execute(
+                    "UPDATE orders SET route=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (applied_route, order["id"])
+                )
+                applied = 1
+            else:
+                action_plan = (
+                    "1. Приостановить отправку по проблемному участку. "
+                    "2. Проверить доступность альтернативного узла и остаток. "
+                    "3. Передать диспетчеру на ручное подтверждение; маршрут автоматически не изменён."
+                )
+        elif order and order["status"] in ("Ожидает партии", "Зарезервирован"):
+            action_plan = (
+                "1. Не выпускать заказ на проблемный участок. "
+                "2. Проверить остатки Anchor и Hub. "
+                "3. При подтверждении риска выбрать доступный маршрут до отправки."
+            )
+        elif any(word in text for word in ("повреж", "потер", "утер")):
+            action_plan = (
+                "1. Изолировать затронутую единицу товара. "
+                "2. Сверить физический остаток и резерв. "
+                "3. Зафиксировать фото/акт и решить вопрос о возврате или компенсации."
+            )
+
+        cur = c.execute(
+            """INSERT INTO incidents(order_id,category,description,action_plan,applied_route,applied)
+            VALUES(?,?,?,?,?,?)""",
+            (order_id, category, description, action_plan, applied_route, applied)
+        )
+        return {
+            "incident_id": cur.lastrowid,
+            "action_plan": action_plan,
+            "applied_route": applied_route,
+            "applied": bool(applied),
+        }
+
+
+def sellers_df():
+    with db() as c:
+        return pd.read_sql_query(
+            "SELECT id,name AS Продавец,category AS Категория,contact AS Контакт,active AS Активен FROM sellers ORDER BY name", c
+        )
+
+
+def supplier_deliveries_df():
+    with db() as c:
+        return pd.read_sql_query(
+            """SELECT d.id AS ID,s.name AS Продавец,p.sku AS SKU,p.name AS Товар,
+            h.name AS 'Склад Hub',d.quantity AS Количество,d.reference AS Накладная,
+            d.status AS Статус,d.created_at AS Создана,d.received_at AS Принята
+            FROM supplier_deliveries d JOIN sellers s ON s.id=d.seller_id
+            JOIN products p ON p.id=d.product_id JOIN pickup_points h ON h.id=d.hub_point_id
+            ORDER BY d.id DESC""", c
+        )
+
+
+def create_seller(name, category="", contact=""):
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Укажите название продавца.")
+    with db() as c:
+        cur = c.execute(
+            "INSERT INTO sellers(name,category,contact) VALUES(?,?,?)",
+            (name, (category or "").strip(), (contact or "").strip())
+        )
+        return cur.lastrowid
+
+
+def create_supplier_delivery(seller_id, product_id, hub_point_id, quantity, reference=""):
+    quantity = int(quantity)
+    if quantity <= 0:
+        raise ValueError("Количество поставки должно быть больше нуля.")
+    with db() as c:
+        seller = c.execute("SELECT id FROM sellers WHERE id=? AND active=1", (seller_id,)).fetchone()
+        product = c.execute("SELECT id FROM products WHERE id=?", (product_id,)).fetchone()
+        hub = c.execute("SELECT id FROM pickup_points WHERE id=? AND point_type='Hub' AND active=1", (hub_point_id,)).fetchone()
+        if not seller or not product or not hub:
+            raise ValueError("Проверьте продавца, товар и активный склад Hub.")
+        cur = c.execute(
+            """INSERT INTO supplier_deliveries(seller_id,product_id,hub_point_id,quantity,reference)
+            VALUES(?,?,?,?,?)""",
+            (seller_id, product_id, hub_point_id, quantity, (reference or "").strip())
+        )
+        return cur.lastrowid
+
+
+def receive_supplier_delivery(delivery_id):
+    with db() as c:
+        delivery = c.execute(
+            "SELECT * FROM supplier_deliveries WHERE id=?", (delivery_id,)
+        ).fetchone()
+        if not delivery or delivery["status"] != "Ожидает приёмки":
+            raise ValueError("Поставка уже принята или не найдена.")
+        c.execute(
+            "INSERT OR IGNORE INTO inventory(point_id,product_id,quantity) VALUES(?,?,0)",
+            (delivery["hub_point_id"], delivery["product_id"])
+        )
+        c.execute(
+            "UPDATE inventory SET quantity=quantity+? WHERE point_id=? AND product_id=?",
+            (delivery["quantity"], delivery["hub_point_id"], delivery["product_id"])
+        )
+        c.execute(
+            """INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note)
+            VALUES(?,?,?,?,?,?)""",
+            (delivery["hub_point_id"], delivery["product_id"], "supplier_receipt",
+             delivery["quantity"], delivery["reference"] or f"Поставка {delivery_id}",
+             f"Поставка от продавца ID {delivery['seller_id']}")
+        )
+        c.execute(
+            "UPDATE supplier_deliveries SET status='Принята',received_at=CURRENT_TIMESTAMP WHERE id=?",
+            (delivery_id,)
+        )
+        return delivery["quantity"]
 
 
 def finance_summary():
