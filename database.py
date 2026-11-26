@@ -1468,3 +1468,38 @@ def simulation_vehicles_df():
             ORDER BY o.id DESC LIMIT 40""",c)
 
 
+
+
+def simulation_financials():
+    """Transparent transport-only unit economics for the active continuous shift."""
+    with db() as c:
+        state=c.execute("SELECT shift_code FROM simulation_control WHERE id=1").fetchone()
+        code=state["shift_code"] if state else None
+        if not code:
+            return {"orders":0,"mesh_orders":0,"hub_orders":0,"mesh_trips":0,
+                    "mesh_trip_cost":0.0,"mesh_variable_cost":0.0,"hub_cost":0.0,
+                    "transport_total":0.0,"hub_baseline":0.0,"savings":0.0,"returns":0}
+        rows=c.execute("""SELECT route,COUNT(*) AS n,COALESCE(SUM(estimated_cost),0) AS cost
+            FROM orders WHERE order_code LIKE ? GROUP BY route""",(f"{code}-%",)).fetchall()
+        by_route={r["route"]:r for r in rows}
+        mesh_orders=int(by_route.get("Mesh",{"n":0})["n"])
+        hub_orders=sum(int(r["n"]) for route,r in by_route.items() if route!="Mesh")
+        total=mesh_orders+hub_orders
+        settings=_settings_from_db(c)
+        batches=c.execute("""SELECT COUNT(*) AS n,COALESCE(SUM(trip_cost),0) AS cost
+            FROM mesh_batches WHERE status IN ('dispatched','completed')
+            AND id IN (SELECT DISTINCT batch_id FROM orders WHERE order_code LIKE ?)""",
+            (f"{code}-%",)).fetchone()
+        trips=int(batches["n"] or 0)
+        trip_cost=float(batches["cost"] or 0)
+        variable=mesh_orders*float(settings["mesh_variable_cost"])
+        hub=hub_orders*float(settings["hub_cost_per_order"])
+        transport=trip_cost+variable+hub
+        baseline=total*float(settings["hub_cost_per_order"])
+        returns=c.execute("""SELECT COUNT(*) AS n FROM returns r JOIN orders o ON o.id=r.order_id
+            WHERE o.order_code LIKE ?""",(f"{code}-%",)).fetchone()["n"]
+        return {"orders":total,"mesh_orders":mesh_orders,"hub_orders":hub_orders,
+                "mesh_trips":trips,"mesh_trip_cost":trip_cost,
+                "mesh_variable_cost":variable,"hub_cost":hub,
+                "transport_total":transport,"hub_baseline":baseline,
+                "savings":baseline-transport,"returns":int(returns)}
