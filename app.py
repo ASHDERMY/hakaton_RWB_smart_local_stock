@@ -9,14 +9,12 @@ from database import (
     movements_df, incidents_df, add_incident, finance_summary,
     mesh_batches_df, process_mesh_batches, sellers_df, supplier_deliveries_df,
     create_seller, create_supplier_delivery, receive_supplier_delivery, add_pickup_point,
-    operational_snapshot, operational_runs_df, run_daily_operations, clear_temporary_simulation_data, simulation_state, start_continuous_simulation, stop_continuous_simulation, continuous_simulation_tick, simulation_timeline_df, simulation_vehicles_df, simulation_financials, simulation_shift_snapshot
+    operational_snapshot, operational_runs_df, run_daily_operations, clear_temporary_simulation_data, simulation_state, simulation_control_state, start_continuous_simulation, stop_continuous_simulation, continuous_simulation_tick, simulation_timeline_df, simulation_vehicles_df, simulation_financials, simulation_shift_snapshot
 )
 
 st.set_page_config(page_title="Smart Local Stock", page_icon="📦", layout="wide")
 init_db()
-# Автоматическая проверка партий при каждом запуске/перерисовке Streamlit.
-# Это не фоновый планировщик: просроченная партия будет обработана при следующем обращении к приложению.
-process_mesh_batches()
+# Партии проверяются внутри тика симуляции и при явных операциях, а не на каждом rerun Streamlit.
 
 def settings_values():
     raw=settings_dict()
@@ -45,10 +43,10 @@ with st.sidebar:
     st.caption("Локальная база SQLite")
 
 # Background fragment keeps the simulation advancing even when the operator opens another page.
-_background_state, _ = simulation_state()
-@st.fragment(run_every="2s" if _background_state["running"] else None)
+_background_state = simulation_control_state()
+@st.fragment(run_every="3s" if _background_state["running"] else None)
 def _continuous_simulation_runner():
-    state, _ = simulation_state()
+    state = simulation_control_state()
     if state["running"]:
         try:
             continuous_simulation_tick()
@@ -72,12 +70,12 @@ if page=="Оперативный центр":
 
     with st.container(border=True):
         st.markdown("#### Непрерывная диспетчерская смена")
-        st.caption("Смена работает, пока открыт раздел и не нажата кнопка «Стоп». Такт обновляется каждые 2 секунды; новый заказ моделируется раз в 4 секунды. Данные записываются в SQLite.")
-        sim_state, _ = simulation_state()
+        st.caption("Смена работает, пока открыт раздел и не нажата кнопка «Стоп». Такт обновляется каждые 3 секунды; новый заказ моделируется раз в 6 секунд. Данные записываются в SQLite.")
+        sim_state = simulation_control_state()
 
-    @st.fragment(run_every="2s" if sim_state["running"] else None)
+    @st.fragment(run_every="3s" if sim_state["running"] else None)
     def live_dispatch_fragment():
-        current, _ = simulation_state()
+        current = simulation_control_state()
         state_col, start_col, stop_col = st.columns([2,1,1])
         state_col.metric("Состояние смены", "РАБОТАЕТ" if current["running"] else "ОСТАНОВЛЕНА",
                          f"Такт {current['tick_no']} · {current['shift_code'] or 'нет активной смены'}")
@@ -95,7 +93,7 @@ if page=="Оперативный центр":
         b.metric("В пути", live_status.get("В пути",0))
         c.metric("Ожидают выдачи", live_status.get("Готов к выдаче",0))
         d.metric("Выдано", live_status.get("Выдан",0))
-        st.caption(f"Смена: {current.get('shift_code') or '—'} · Автообновление каждые 2 секунды · Показатели ниже относятся только к этой смене")
+        st.caption(f"Смена: {current.get('shift_code') or '—'} · Автообновление каждые 3 секунды · Показатели ниже относятся только к этой смене")
         timeline = simulation_timeline_df(30)
         st.markdown("##### Хронология событий")
         if timeline.empty:
@@ -246,7 +244,7 @@ if page=="Оперативный центр":
                 st.rerun()
             except Exception as exc:
                 st.error(f"Не удалось очистить данные: {exc}")
-    st.caption("Симуляция использует модельные события и виртуальные перевозки. Она не является интеграцией с API Wildberries, не использует GPS и прекращается при остановке приложения.")
+    st.caption("Симуляция использует случайное распределение заказов по обычным ПВЗ, модельные события и виртуальные перевозки. Она не является интеграцией с API Wildberries, не использует GPS и прекращается при остановке приложения.")
 
 
 if page=="Панель управления":
