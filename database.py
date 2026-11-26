@@ -137,23 +137,67 @@ def init_db():
 
 
 def seed_demo():
-    # INSERT OR IGNORE protects user-created records and makes this operation repeatable.
+    # Seed by stable business keys, never by assumed integer IDs.
+    # This remains safe when city demo points or user data already occupy low IDs.
     with db() as c:
-        c.executemany("INSERT OR IGNORE INTO pickup_points(id,name,point_type,city) VALUES(?,?,?,?)", [
-            (1, "Anchor Центр", "Anchor", "Демо-город"),
-            (2, "ПВЗ Север", "Обычный", "Демо-город"),
-            (3, "ПВЗ Юг", "Обычный", "Демо-город"),
-            (4, "Центральный склад Hub", "Hub", "Демо-город")
-        ])
-        c.executemany("INSERT OR IGNORE INTO products(id,sku,name,category,volume_l,demand_class) VALUES(?,?,?,?,?,?)", [
-            (1, "SKU-001", "Беспроводная мышь", "Электроника", 1.2, "AX"),
-            (2, "SKU-002", "Кабель USB-C", "Аксессуары", 0.3, "AX"),
-            (3, "SKU-003", "Настольная лампа", "Дом", 4.0, "BY")
-        ])
-        c.executemany("INSERT OR IGNORE INTO inventory(point_id,product_id,quantity,reserved,incoming) VALUES(?,?,?,0,0)", [
-            (1, 1, 90), (1, 2, 120), (1, 3, 15),
-            (4, 1, 500), (4, 2, 800), (4, 3, 200)
-        ])
+        point_specs = [
+            ("Anchor Центр", "Anchor", "Демо-город"),
+            ("ПВЗ Север", "Обычный", "Демо-город"),
+            ("ПВЗ Юг", "Обычный", "Демо-город"),
+            ("Центральный склад Hub", "Hub", "Демо-город"),
+        ]
+        for name, point_type, city in point_specs:
+            c.execute(
+                """INSERT INTO pickup_points(name,point_type,city)
+                SELECT ?,?,? WHERE NOT EXISTS (
+                    SELECT 1 FROM pickup_points WHERE name=? OR
+                    (point_type=? AND city=? AND name=?)
+                )""",
+                (name, point_type, city, name, point_type, city, name),
+            )
+
+        point_ids = {
+            row["name"]: row["id"]
+            for row in c.execute(
+                "SELECT id,name FROM pickup_points WHERE name IN (?,?,?,?)",
+                tuple(spec[0] for spec in point_specs),
+            ).fetchall()
+        }
+
+        product_specs = [
+            ("SKU-001", "Беспроводная мышь", "Электроника", 1.2, "AX"),
+            ("SKU-002", "Кабель USB-C", "Аксессуары", 0.3, "AX"),
+            ("SKU-003", "Настольная лампа", "Дом", 4.0, "BY"),
+        ]
+        c.executemany(
+            """INSERT OR IGNORE INTO products(sku,name,category,volume_l,demand_class)
+            VALUES(?,?,?,?,?)""",
+            product_specs,
+        )
+        product_ids = {
+            row["sku"]: row["id"]
+            for row in c.execute(
+                "SELECT id,sku FROM products WHERE sku IN (?,?,?)",
+                tuple(spec[0] for spec in product_specs),
+            ).fetchall()
+        }
+
+        stock_specs = [
+            ("Anchor Центр", "SKU-001", 90),
+            ("Anchor Центр", "SKU-002", 120),
+            ("Anchor Центр", "SKU-003", 15),
+            ("Центральный склад Hub", "SKU-001", 500),
+            ("Центральный склад Hub", "SKU-002", 800),
+            ("Центральный склад Hub", "SKU-003", 200),
+        ]
+        c.executemany(
+            """INSERT OR IGNORE INTO inventory(point_id,product_id,quantity,reserved,incoming)
+            VALUES(?,?,?,0,0)""",
+            [
+                (point_ids[point_name], product_ids[sku], quantity)
+                for point_name, sku, quantity in stock_specs
+            ],
+        )
 
 
 def products_df():
