@@ -1349,6 +1349,9 @@ def _auto_supplier_and_anchor_replenishment(tick_no, shift_code):
             _simulation_event(c,shift_code,tick_no,"Поставка продавца",
                               f"Продавец отправил {qty} ед. {product['SKU']} на Hub; машина в пути")
     # Reserve goods at Hub for a modelled Hub -> Anchor replenishment transport.
+    # Replenishment planning is evaluated every third tick to reduce SQLite load.
+    if tick_no % 3 != 1:
+        return
     for _,product in products.iterrows():
         with db() as c:
             # Старые SQLite-базы могли не содержать строки остатков для всех SKU в Hub/Anchor.
@@ -1392,7 +1395,7 @@ def _advance_supply_transports(shift_code,tick_no):
     import random
     with db() as c:
         rows=c.execute("""SELECT * FROM simulation_supply_transports
-            WHERE shift_code=? AND status='В пути' ORDER BY id LIMIT 30""",(shift_code,)).fetchall()
+            WHERE shift_code=? AND status='В пути' ORDER BY id LIMIT 15""",(shift_code,)).fetchall()
     for row in rows:
         with db() as c:
             progress=min(1.0,float(row["progress"])+random.uniform(0.18,0.32))
@@ -1478,7 +1481,9 @@ def continuous_simulation_tick():
                         f"Заказ не создан: {str(exc)[:180]}",
                     )
 
-    process_mesh_batches()
+    # Open-batch timeout evaluation is less frequent; new orders evaluate their batch on insertion.
+    if tick_no % 3 == 0:
+        process_mesh_batches()
 
     # Dispatch Hub reservations in a small bounded batch.
     with db() as c:
