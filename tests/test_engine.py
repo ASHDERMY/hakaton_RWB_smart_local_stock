@@ -49,7 +49,7 @@ class EngineTests(unittest.TestCase):
         self.assertAlmostEqual(result["mesh_cost_per_order"], 54.5)
 
     def test_volume_capacity_triggers_batch_decision(self):
-        result = evaluate_batch(40, 1500, 1, 2400, 14.5, 62, 80, 130, 1500, 5)
+        result = evaluate_batch(60, 1500, 1, 2400, 14.5, 62, 80, 130, 1500, 5)
         self.assertEqual(result["decision"], "mesh")
 
     def test_over_capacity_batch_is_rejected(self):
