@@ -8,7 +8,8 @@ from database import (
     update_order_status, create_return, process_return, returns_df,
     movements_df, incidents_df, add_incident, finance_summary,
     mesh_batches_df, process_mesh_batches, sellers_df, supplier_deliveries_df,
-    create_seller, create_supplier_delivery, receive_supplier_delivery, add_pickup_point
+    create_seller, create_supplier_delivery, receive_supplier_delivery, add_pickup_point,
+    operational_snapshot, operational_runs_df, run_daily_operations
 )
 
 st.set_page_config(page_title="Smart Local Stock", page_icon="📦", layout="wide")
@@ -34,7 +35,7 @@ st.title("📦 Smart Local Stock")
 st.caption("Локальный запас → консолидация → выбор Mesh или Hub → доставка в ПВЗ → выдача. Расчётные тарифы помечены как гипотезы.")
 with st.sidebar:
     page=st.radio("Рабочие разделы",[
-        "Панель управления","Карта логистики","Товары и ПВЗ","Склад и приёмка","Продавцы и поставки",
+        "Оперативный центр","Панель управления","Карта логистики","Товары и ПВЗ","Склад и приёмка","Продавцы и поставки",
         "Заказы","Партии Mesh","Возвраты","Инциденты","Экономика участников","Финансы","Настройки модели","Журнал операций"
     ])
     st.divider()
@@ -42,6 +43,138 @@ with st.sidebar:
         seed_demo()
         st.success("Демоданные добавлены. Повторное нажатие не дублирует записи.")
     st.caption("Локальная база SQLite")
+
+if page=="Оперативный центр":
+    st.subheader("Оперативный центр логистической сети")
+    st.caption("Единый экран диспетчера: заказы, запасы, партии, происшествия, поставки, возвраты и расчётные финансы. Все показатели берутся из текущей SQLite-базы.")
+    snap = operational_snapshot()
+    status = snap["status_counts"]
+    inv = snap["inventory"]
+    batches = snap["batches"]
+    incidents = snap["incidents"]
+    returns = snap["returns"]
+    deliveries = snap["deliveries"]
+    points = snap["points"]
+    today = snap["today"]
+
+    with st.container(border=True):
+        st.markdown("#### Запуск повседневной смены (симуляция)")
+        st.write("Кнопка создаёт поток тестовых заказов на основе реальных остатков, запускает правила выбора Mesh/Hub, обрабатывает партии и проводит часть отправлений до ПВЗ и выдачи. Результаты сохраняются в базе и появляются в этом центре.")
+        with st.form("daily_operations_form"):
+            sim_col1, sim_col2 = st.columns([1, 1])
+            with sim_col1:
+                shift_orders = st.number_input("Заказов в смене", min_value=1, max_value=500, value=40, step=5)
+            with sim_col2:
+                simulate_incident = st.checkbox("Добавить дорожный инцидент для проверки диспетчера", value=False)
+            start_shift = st.form_submit_button("▶ Запустить повседневную работу", type="primary", use_container_width=True)
+        if start_shift:
+            result = show_error(lambda: run_daily_operations(int(shift_orders), simulate_incident))
+            if result:
+                st.success(f"Смена {result['run_code']} завершена: создано {result['created_orders']} заказов, отправлено {result['dispatched_orders']}, прибыло в ПВЗ {result['ready_orders']}, выдано {result['issued_orders']}.")
+                st.write(f"Не создано из-за ограничений остатков: {result['failed_orders']}. Инцидентов: {result['incidents_created']}. Расчётные затраты: {result['estimated_cost']:,.2f} ₽.")
+                st.rerun()
+
+    st.markdown("#### Состояние сети сейчас")
+    alerts = []
+    if batches["blocked_batches"]:
+        alerts.append(f"Заблокировано партий из-за остатка Hub: {batches['blocked_batches']}")
+    if incidents["open_incidents"]:
+        alerts.append(f"Открытых инцидентов: {incidents['open_incidents']}")
+    if deliveries["pending_deliveries"]:
+        alerts.append(f"Ожидают приёмки поставки продавца: {deliveries['pending_deliveries']}")
+    if returns["pending_returns"]:
+        alerts.append(f"Не обработано возвратов: {returns['pending_returns']}")
+    if inv["low_stock_rows"]:
+        alerts.append(f"Низкий остаток: {inv['low_stock_rows']} товарных позиций (порог ≤ 5 шт.)")
+    if alerts:
+        for alert in alerts:
+            st.warning(alert)
+    else:
+        st.success("Критичных сигналов по текущим правилам мониторинга нет.")
+
+    m1,m2,m3,m4 = st.columns(4)
+    m1.metric("Всего заказов", f"{snap['total_orders']:,}")
+    m2.metric("Заказы сегодня", f"{today['orders_today']:,}")
+    m3.metric("В пути", f"{status.get('В пути',0):,}")
+    m4.metric("Ожидают партии", f"{status.get('Ожидает партии',0):,}")
+    m5,m6,m7,m8 = st.columns(4)
+    m5.metric("Активные точки", f"{points['active_points'] or 0}", f"Anchor {points['anchors'] or 0} · Hub {points['hubs'] or 0}")
+    m6.metric("Физический запас", f"{inv['physical_units']:,} шт.")
+    m7.metric("Зарезервировано", f"{inv['reserved_units']:,} шт.")
+    m8.metric("Входящие поставки", f"{deliveries['pending_deliveries']:,}")
+
+    st.markdown("#### Поток заказов по статусам")
+    status_order = ["Ожидает партии","Зарезервирован","В пути","Готов к выдаче","Выдан","Возврат оформлен","Ошибка","Отменён"]
+    status_frame = pd.DataFrame([{"Статус": name, "Количество": status.get(name,0)} for name in status_order])
+    chart_col, finance_col = st.columns([1.15,1])
+    with chart_col:
+        st.bar_chart(status_frame.set_index("Статус"), use_container_width=True)
+    with finance_col:
+        st.markdown("#### Финансовая картина")
+        fin = finance_summary()
+        st.metric("Расчётные логистические затраты", f"{fin['estimated_cost']:,.2f} ₽")
+        st.metric("Расходы, созданные сегодня", f"{today['cost_today']:,.2f} ₽")
+        route_frame = pd.DataFrame([
+            {"Маршрут": route, "Заказов": count}
+            for route,count in snap["route_counts"].items()
+        ])
+        if not route_frame.empty:
+            st.dataframe(route_frame,use_container_width=True,hide_index=True)
+        st.caption("Затраты рассчитываются по параметрам модели. Это гипотезы, а не подтверждённая внутренняя себестоимость RWB.")
+
+    st.markdown("#### Что требует внимания диспетчера")
+    alert_cols = st.columns(4)
+    alert_cols[0].metric("Открытые инциденты", incidents["open_incidents"])
+    alert_cols[1].metric("Обходы через Hub", incidents["rerouted_incidents"])
+    alert_cols[2].metric("Ожидают возврата", returns["pending_returns"])
+    alert_cols[3].metric("Заблокированные партии", batches["blocked_batches"])
+    table_col1, table_col2 = st.columns(2)
+    with table_col1:
+        st.markdown("**Активные заказы**")
+        live_orders = orders_df()
+        if not live_orders.empty:
+            live_orders = live_orders[live_orders["Статус"].isin(["Ожидает партии","Зарезервирован","В пути","Готов к выдаче","Ошибка"])]
+            st.dataframe(live_orders.head(15),use_container_width=True,hide_index=True)
+        else:
+            st.info("Активных заказов пока нет.")
+    with table_col2:
+        st.markdown("**Открытые происшествия**")
+        live_incidents = incidents_df()
+        if not live_incidents.empty:
+            live_incidents = live_incidents[live_incidents["Статус"]=="open"]
+            st.dataframe(live_incidents.head(10),use_container_width=True,hide_index=True)
+        else:
+            st.info("Инцидентов пока нет.")
+
+    st.markdown("#### Партии, остатки и поставки")
+    batch_col, stock_col = st.columns(2)
+    with batch_col:
+        st.markdown("**Ожидающие и заблокированные партии**")
+        live_batches = mesh_batches_df()
+        if not live_batches.empty:
+            live_batches = live_batches[live_batches["Статус"].isin(["waiting","blocked_hub_stock"])]
+            st.dataframe(live_batches,use_container_width=True,hide_index=True)
+        else:
+            st.info("Открытых партий нет.")
+    with stock_col:
+        st.markdown("**Товары с низким доступным остатком**")
+        low_stock = inventory_df()
+        if not low_stock.empty:
+            low_stock = low_stock[low_stock["Доступно"] <= 5]
+            st.dataframe(low_stock.head(15),use_container_width=True,hide_index=True)
+        else:
+            st.info("Нет складских данных.")
+
+    st.markdown("#### История запусков повседневной смены")
+    runs = operational_runs_df()
+    if runs.empty:
+        st.info("Симуляции ещё не запускались.")
+    else:
+        st.dataframe(runs,use_container_width=True,hide_index=True)
+    if st.button("↻ Обновить оперативные показатели",use_container_width=True):
+        st.rerun()
+    st.caption("Обновление выполняется при перерисовке страницы. Симуляция не является реальной интеграцией с API Wildberries и не работает в фоне после закрытия приложения.")
+
 
 if page=="Панель управления":
     st.subheader("Состояние логистической сети")
