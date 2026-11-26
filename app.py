@@ -4,7 +4,8 @@ from database import (
     init_db, seed_demo, products_df, inventory_df, points_df, orders_df,
     settings_dict, save_setting, add_product, receive_stock, create_order,
     update_order_status, create_return, process_return, returns_df,
-    movements_df, incidents_df, add_incident, finance_summary
+    movements_df, incidents_df, add_incident, finance_summary,
+    mesh_batches_df, process_mesh_batches
 )
 
 st.set_page_config(page_title="Smart Local Stock", page_icon="📦", layout="wide")
@@ -27,7 +28,7 @@ st.title("📦 Smart Local Stock")
 st.caption("Система локального хранения, учёта заказов и выбора маршрута Hub / Mesh")
 with st.sidebar:
     page=st.radio("Рабочие разделы",[
-        "Панель управления","Товары и ПВЗ","Склад и приёмка","Заказы","Возвраты",
+        "Панель управления","Товары и ПВЗ","Склад и приёмка","Заказы","Партии Mesh","Возвраты",
         "Инциденты","Финансы","Настройки модели","Журнал операций"
     ])
     st.divider()
@@ -106,7 +107,11 @@ elif page=="Заказы":
             submit=st.form_submit_button("Создать заказ и выбрать маршрут")
             if submit:
                 result=show_error(lambda:create_order(code,pmap[product],dmap[destination],int(qty),settings))
-                if result: st.success(f'Маршрут: {result["route"]}; источник: {result["source"]}; оценка затрат: {result["estimated_cost"]:.2f} ₽')
+                if result:
+                    if result["status"] == "Ожидает партии":
+                        st.info(f'Заказ добавлен в Mesh-партию №{result["batch_id"]}. Он ожидает накопления партии; резерв создан в Anchor.')
+                    else:
+                        st.success(f'Маршрут: {result["route"]}; источник: {result["source"]}; статус: {result["status"]}; оценка затрат: {result["estimated_cost"]:.2f} ₽')
     st.markdown("#### Заказы и переходы статусов")
     od=orders_df()
     if od.empty: st.info("Заказов пока нет.")
@@ -121,6 +126,31 @@ elif page=="Заказы":
                 next_status=st.selectbox("Следующий статус",allowed[row["Статус"]])
                 change=st.form_submit_button("Изменить статус")
                 if change: show_error(lambda:update_order_status(int(row["id"]),next_status))
+
+elif page=="Партии Mesh":
+    st.subheader("Накопление и отправка локальных партий")
+    st.caption("Партии формируются отдельно для пары Anchor → обычный ПВЗ. Учитываются реальные количество заказов и суммарный объём товаров.")
+    if st.button("Обработать ожидающие партии", type="primary"):
+        results = process_mesh_batches()
+        if not results:
+            st.info("Нет партий, требующих проверки.")
+        else:
+            for result in results:
+                st.write(f'Партия №{result["batch_id"]}: {result["decision"]} — {result["reason"]}')
+    batches = mesh_batches_df()
+    if batches.empty:
+        st.info("Пока нет Mesh-партий. Создай заказы с доступным запасом в Anchor.")
+    else:
+        st.dataframe(batches, use_container_width=True, hide_index=True)
+    st.markdown("#### Правила закрытия партии")
+    st.markdown("""
+    - При достижении целевой загрузки (по умолчанию 80 заказов) система сравнивает полную расчётную стоимость Mesh и Hub.
+    - Партия не может превышать 130 заказов или 1 500 л.
+    - Если целевая загрузка не набрана, партия ожидает, но не дольше 5 часов.
+    - После достижения условия закрытия Mesh отправляется только если он дешевле Hub; иначе заказы переводятся на Hub.
+    - Если на Hub недостаточно товара для всей партии, она получает статус блокировки; после пополнения Hub проверку можно повторить.
+    """)
+    st.warning("Параметры стоимости — гипотезы модели. Максимальное ожидание 5 часов — проектное ограничение, а не подтверждённый SLA.")
 
 elif page=="Возвраты":
     st.subheader("Оформление и обработка возвратов")
