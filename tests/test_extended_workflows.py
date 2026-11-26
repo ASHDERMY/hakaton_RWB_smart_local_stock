@@ -125,6 +125,24 @@ class ExtendedWorkflowTests(unittest.TestCase):
         )
         database.stop_continuous_simulation()
 
+    def test_continuous_tick_repairs_missing_hub_inventory_rows(self):
+        points = database.points_df()
+        hubs = points[points["Тип"] == "Hub"]
+        products = database.products_df()
+        self.assertFalse(hubs.empty)
+        self.assertFalse(products.empty)
+        with database.db() as conn:
+            conn.execute("DELETE FROM inventory WHERE point_id=? AND product_id=?",
+                         (int(hubs.iloc[0]["id"]), int(products.iloc[0]["id"])))
+        database.start_continuous_simulation()
+        result = database.continuous_simulation_tick()
+        self.assertTrue(result["running"])
+        with database.db() as conn:
+            row = conn.execute("SELECT 1 FROM inventory WHERE point_id=? AND product_id=?",
+                               (int(hubs.iloc[0]["id"]), int(products.iloc[0]["id"]))).fetchone()
+        self.assertIsNotNone(row)
+        database.stop_continuous_simulation()
+
     def test_route_incident_creates_plan_and_changes_mesh_route_via_hub(self):
         for number in range(1, 81):
             database.create_order(
