@@ -50,6 +50,17 @@ class FinancialModelTests(unittest.TestCase):
         )
         self.assertAlmostEqual(fee, 3.6666666667, places=6)
 
+    def test_forecast_reports_negative_roi_and_npv_when_full_costs_exceed_hub(self):
+        result = forecast_financials(
+            monthly_orders=1200, mesh_share_pct=100, anchors=3, batch_orders=80,
+            trip_cost=2400, hub_cost_per_order=62, variable_cost=14.5,
+            anchor_fee=3.5, replenishment_per_order=9, storage_per_order=2.5,
+            monthly_system_cost=10000, months=12, discount_rate_annual_pct=15,
+        )
+        self.assertAlmostEqual(result["total_savings"], -84000.0)
+        self.assertAlmostEqual(result["roi_pct"], -70.0)
+        self.assertLess(result["npv"], 0)
+
     def test_operational_batch_routing_accounts_for_additional_costs(self):
         result = evaluate_batch(
             80, 320, 5, 2400, 14.5, 62, 80, 130, 1500, 5,
