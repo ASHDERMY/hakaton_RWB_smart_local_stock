@@ -895,7 +895,7 @@ elif page=="Финансы":
 
     st.markdown("#### Чувствительность к загрузке рейса")
     sensitivity = []
-    for target in sorted(set([max(1, min(80, int(batch_orders))), max(1, min(100, int(batch_orders))), 130])):
+    for target in (80, 100, 130):
         test = forecast_financials(
             monthly_orders=monthly_orders, mesh_share_pct=mesh_share, anchors=anchors,
             batch_orders=target, max_orders=130, avg_order_volume_l=4.0, max_volume_l=1500,
