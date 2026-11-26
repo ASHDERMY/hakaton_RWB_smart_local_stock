@@ -356,6 +356,11 @@ def render_live_dispatch_map(vehicles: pd.DataFrame):
     for _,row in vehicles.iterrows():
         destination=_destination_for_name(row.get("Назначение",""))
         source=HUB if str(row.get("Тип_источника",""))=="Hub" else ANCHOR
+        if pd.notna(row.get("source_lat")) and pd.notna(row.get("dest_lat")):
+            source={"lat":float(row["source_lat"]),"lon":float(row["source_lon"])}
+            destination={"lat":float(row["dest_lat"]),"lon":float(row["dest_lon"])}
+        elif str(row.get("Тип_источника",""))=="Supply":
+            source={"lat":55.76,"lon":49.12}
         route=_road_route(source["lon"],source["lat"],destination["lon"],destination["lat"])
         coords=route["coordinates"]
         progress=max(0.0,min(1.0,float(row.get("Прогресс",0))))
