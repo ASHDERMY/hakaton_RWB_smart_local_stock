@@ -1136,3 +1136,113 @@ def run_daily_operations(order_limit=80, simulate_incident=False, destination_po
         "estimated_cost": float(costs),
         "batch_results": batch_results,
     }
+
+
+def clear_temporary_simulation_data():
+    """Remove only orders created by persisted SHIFT runs and reverse their stock ledger."""
+    with db() as c:
+        runs = c.execute("SELECT run_code FROM operational_runs").fetchall()
+        run_codes = [row["run_code"] for row in runs]
+        if not run_codes:
+            return {"runs": 0, "orders": 0, "incidents": 0, "returns": 0, "batches": 0}
+
+        order_codes = []
+        order_ids = []
+        batch_ids = set()
+        for run_code in run_codes:
+            rows = c.execute(
+                """SELECT id,order_code,batch_id FROM orders
+                WHERE order_code LIKE ?""",
+                (f"{run_code}-%",)
+            ).fetchall()
+            for row in rows:
+                order_ids.append(int(row["id"]))
+                order_codes.append(row["order_code"])
+                if row["batch_id"] is not None:
+                    batch_ids.add(int(row["batch_id"]))
+
+        if not order_ids:
+            c.execute("DELETE FROM operational_runs")
+            return {"runs": len(run_codes), "orders": 0, "incidents": 0, "returns": 0, "batches": 0}
+
+        code_marks = ",".join("?" for _ in order_codes)
+        id_marks = ",".join("?" for _ in order_ids)
+
+        # Reverse every stock movement attached to a simulated order.
+        movements = c.execute(
+            f"""SELECT point_id,product_id,movement_type,quantity
+            FROM stock_movements WHERE reference IN ({code_marks})""",
+            order_codes
+        ).fetchall()
+        for movement in movements:
+            qty = int(movement["quantity"])
+            point_id, product_id = int(movement["point_id"]), int(movement["product_id"])
+            kind = movement["movement_type"]
+            if kind == "reserve":
+                c.execute("UPDATE inventory SET reserved=MAX(0,reserved-?) WHERE point_id=? AND product_id=?",
+                          (qty, point_id, product_id))
+            elif kind == "release_reserve":
+                c.execute("UPDATE inventory SET reserved=reserved+? WHERE point_id=? AND product_id=?",
+                          (qty, point_id, product_id))
+            elif kind == "dispatch":
+                c.execute("UPDATE inventory SET quantity=quantity+?,reserved=reserved+? WHERE point_id=? AND product_id=?",
+                          (qty, qty, point_id, product_id))
+            elif kind == "arrival":
+                c.execute("UPDATE inventory SET quantity=MAX(0,quantity-?) WHERE point_id=? AND product_id=?",
+                          (qty, point_id, product_id))
+            elif kind == "issue":
+                c.execute("UPDATE inventory SET quantity=quantity+? WHERE point_id=? AND product_id=?",
+                          (qty, point_id, product_id))
+
+        returns = c.execute(
+            f"SELECT id,order_id,quantity FROM returns WHERE order_id IN ({id_marks})",
+            order_ids
+        ).fetchall()
+        return_ids = [int(row["id"]) for row in returns]
+        for ret in returns:
+            # A usable return adds stock back; reverse that addition before deleting the return.
+            return_movements = c.execute(
+                """SELECT point_id,product_id,quantity FROM stock_movements
+                WHERE movement_type='return' AND reference=?""",
+                (str(ret["id"]),)
+            ).fetchall()
+            for movement in return_movements:
+                c.execute(
+                    "UPDATE inventory SET quantity=MAX(0,quantity-?) WHERE point_id=? AND product_id=?",
+                    (int(movement["quantity"]), int(movement["point_id"]), int(movement["product_id"]))
+                )
+
+        incidents_count = c.execute(
+            f"SELECT COUNT(*) AS n FROM incidents WHERE order_id IN ({id_marks})",
+            order_ids
+        ).fetchone()["n"]
+
+        if return_ids:
+            return_marks = ",".join("?" for _ in return_ids)
+            c.execute(
+                f"DELETE FROM stock_movements WHERE movement_type='return' AND reference IN ({return_marks})",
+                [str(value) for value in return_ids]
+            )
+        c.execute(f"DELETE FROM stock_movements WHERE reference IN ({code_marks})", order_codes)
+        c.execute(f"DELETE FROM incidents WHERE order_id IN ({id_marks})", order_ids)
+        c.execute(f"DELETE FROM returns WHERE order_id IN ({id_marks})", order_ids)
+        c.execute(f"DELETE FROM orders WHERE id IN ({id_marks})", order_ids)
+
+        deleted_batches = 0
+        if batch_ids:
+            for batch_id in batch_ids:
+                remaining = c.execute(
+                    "SELECT COUNT(*) AS n FROM orders WHERE batch_id=?", (batch_id,)
+                ).fetchone()["n"]
+                if remaining == 0:
+                    c.execute("DELETE FROM mesh_batches WHERE id=?", (batch_id,))
+                    deleted_batches += 1
+
+        c.execute("DELETE FROM operational_runs")
+        return {
+            "runs": len(run_codes),
+            "orders": len(order_ids),
+            "incidents": int(incidents_count),
+            "returns": len(returns),
+            "batches": deleted_batches,
+        }
