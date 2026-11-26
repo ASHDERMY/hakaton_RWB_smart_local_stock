@@ -101,3 +101,87 @@ def calculate_costs(total_orders, mesh_orders, hub_orders, hub_cost_per_order, t
         "combined_total": total,
         "savings": baseline - total,
     }
+
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    """Great-circle distance for preliminary geographic clustering."""
+    from math import radians, sin, cos, sqrt, atan2
+    radius = 6371.0088
+    dlat, dlon = radians(float(lat2)-float(lat1)), radians(float(lon2)-float(lon1))
+    a = sin(dlat/2)**2 + cos(radians(float(lat1)))*cos(radians(float(lat2)))*sin(dlon/2)**2
+    return 2*radius*atan2(sqrt(a), sqrt(max(0.0, 1.0-a)))
+
+
+def plan_multi_stop_routes(anchor, stops, max_orders, max_volume_l, trip_cost,
+                           variable_cost_per_order, hub_cost_per_order, max_detour_km=2.0):
+    """Plan combined Anchor-to-PVZ routes; recommendations only, no order mutation."""
+    if not anchor or anchor.get("lat") is None or anchor.get("lon") is None:
+        raise ValueError("Для Anchor не заданы координаты.")
+    max_orders = max(1, int(max_orders))
+    max_volume_l = float(max_volume_l)
+    max_detour_km = max(0.0, float(max_detour_km))
+    trip_cost = max(0.0, float(trip_cost))
+    variable_cost_per_order = max(0.0, float(variable_cost_per_order))
+    hub_cost_per_order = max(0.0, float(hub_cost_per_order))
+    anchor_lat, anchor_lon = float(anchor["lat"]), float(anchor["lon"])
+    remaining, skipped = [], []
+    for stop in stops:
+        try:
+            lat, lon = float(stop["lat"]), float(stop["lon"])
+            count, volume = int(stop["orders"]), float(stop["volume_l"])
+            point_id = int(stop["point_id"])
+            if count <= 0:
+                continue
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise ValueError
+            if count > max_orders or volume > max_volume_l:
+                skipped.append({"point_id": point_id, "name": str(stop["name"]),
+                    "orders": count, "volume_l": volume,
+                    "reason": "Спрос одной точки превышает вместимость рейса; требуется разделение партии."})
+                continue
+            remaining.append({"point_id": point_id, "name": str(stop["name"]),
+                "lat": lat, "lon": lon, "orders": count, "volume_l": volume})
+        except (KeyError, TypeError, ValueError):
+            skipped.append({"point_id": stop.get("point_id"), "name": str(stop.get("name", "ПВЗ без названия")),
+                "orders": int(stop.get("orders", 0) or 0), "volume_l": float(stop.get("volume_l", 0) or 0),
+                "reason": "Нет корректных координат или параметров спроса."})
+    routes = []
+    while remaining:
+        first = min(remaining, key=lambda p: haversine_km(anchor_lat, anchor_lon, p["lat"], p["lon"]))
+        remaining.remove(first)
+        group, count, volume = [first], first["orders"], first["volume_l"]
+        distance = haversine_km(anchor_lat, anchor_lon, first["lat"], first["lon"])
+        current = first
+        while remaining:
+            direct_back = haversine_km(current["lat"], current["lon"], anchor_lat, anchor_lon)
+            candidates = []
+            for candidate in remaining:
+                if count + candidate["orders"] > max_orders or volume + candidate["volume_l"] > max_volume_l:
+                    continue
+                detour = (haversine_km(current["lat"], current["lon"], candidate["lat"], candidate["lon"])
+                    + haversine_km(candidate["lat"], candidate["lon"], anchor_lat, anchor_lon) - direct_back)
+                if detour <= max_detour_km:
+                    candidates.append((detour, candidate["point_id"], candidate))
+            if not candidates:
+                break
+            _, _, chosen = min(candidates, key=lambda item: (item[0], item[1]))
+            distance += haversine_km(current["lat"], current["lon"], chosen["lat"], chosen["lon"])
+            count += chosen["orders"]
+            volume += chosen["volume_l"]
+            group.append(chosen)
+            remaining.remove(chosen)
+            current = chosen
+        distance += haversine_km(current["lat"], current["lon"], anchor_lat, anchor_lon)
+        mesh_total = trip_cost + count * variable_cost_per_order
+        hub_total = count * hub_cost_per_order
+        mesh_per_order = mesh_total / count
+        decision = "Mesh" if mesh_total < hub_total else "Hub"
+        routes.append({"route_no": len(routes)+1, "stops": group,
+            "stop_names": [p["name"] for p in group], "total_orders": count,
+            "total_volume_l": round(volume, 2), "distance_km_straight": round(distance, 2),
+            "mesh_total": round(mesh_total, 2), "mesh_per_order": round(mesh_per_order, 2),
+            "hub_total": round(hub_total, 2), "hub_per_order": round(hub_cost_per_order, 2),
+            "decision": decision,
+            "reason": "Объединённый рейс дешевле расчётного варианта Hub."
+                if decision == "Mesh" else "Для этой группы Hub дешевле или равен Mesh."})
+    return {"routes": routes, "skipped": skipped}
