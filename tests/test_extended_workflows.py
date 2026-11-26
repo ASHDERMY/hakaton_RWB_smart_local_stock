@@ -210,6 +210,35 @@ class ExtendedWorkflowTests(unittest.TestCase):
         self.assertEqual(snapshot["status_counts"]["Ожидает партии"], 2)
         database.stop_continuous_simulation()
 
+    def test_live_shift_snapshot_and_vehicle_map_use_only_current_shift(self):
+        code = database.start_continuous_simulation()
+        with database.db() as conn:
+            anchor_id = conn.execute(
+                "SELECT id FROM pickup_points WHERE point_type='Anchor' AND active=1 ORDER BY id LIMIT 1"
+            ).fetchone()["id"]
+            conn.execute("UPDATE inventory SET quantity=0,reserved=0 WHERE point_id=? AND product_id=1",
+                         (anchor_id,))
+        result = database.create_order(f"{code}-O-00001", 1, 2, 1, self.settings)
+        self.assertEqual(result["route"], "Hub")
+        with database.db() as conn:
+            order_id = conn.execute("SELECT id FROM orders WHERE order_code=?",
+                                     (f"{code}-O-00001",)).fetchone()["id"]
+        database.update_order_status(order_id, "В пути")
+
+        snapshot = database.simulation_shift_snapshot()
+        self.assertEqual(snapshot["total_orders"], 1)
+        self.assertEqual(snapshot["status_counts"]["В пути"], 1)
+        vehicles = database.simulation_vehicles_df()
+        self.assertEqual(len(vehicles), 1)
+        self.assertEqual(vehicles.iloc[0]["Заказ"], f"{code}-O-00001")
+        self.assertGreaterEqual(len(database.simulation_timeline_df()), 1)
+        database.stop_continuous_simulation()
+
+    def test_simulation_destination_is_stable_for_a_full_target_batch(self):
+        self.assertEqual(database._simulation_destination_index(1, 5, 80, 2), 0)
+        self.assertEqual(database._simulation_destination_index(159, 5, 80, 2), 0)
+        self.assertEqual(database._simulation_destination_index(161, 5, 80, 2), 1)
+
     def test_route_incident_creates_plan_and_changes_mesh_route_via_hub(self):
         for number in range(1, 81):
             database.create_order(
