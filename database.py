@@ -164,6 +164,8 @@ def init_db():
         """)
         # Миграции для SQLite-баз, созданных предыдущими версиями MVP.
         _add_column(c, "pickup_points", "active INTEGER NOT NULL DEFAULT 1")
+        _add_column(c, "pickup_points", "latitude REAL")
+        _add_column(c, "pickup_points", "longitude REAL")
         _add_column(c, "orders", "source_point_id INTEGER")
         _add_column(c, "orders", "estimated_cost REAL NOT NULL DEFAULT 0")
         _add_column(c, "orders", "updated_at TEXT")
@@ -272,6 +274,23 @@ def seed_demo():
                 (point_name, point_type, city, point_name),
             )
 
+        # Ориентировочные координаты демонстрационных точек, не реестр адресов WB.
+        demo_coordinates = {
+            "Anchor Центр": (56.631364, 47.890917),
+            "Центральный склад Hub": (55.848721, 48.842408),
+            "WB ПВЗ · Воинов-Интернационалистов, 34": (56.6388, 47.9270),
+            "WB ПВЗ · Советская, 97": (56.6320, 47.8990),
+            "WB ПВЗ · Ленинский проспект, 16А": (56.6265, 47.9110),
+            "WB ПВЗ · Красноармейская, 115": (56.643115, 47.854206),
+            "WB ПВЗ · Кремлёвская, 20": (56.6310, 47.8970),
+        }
+        for point_name, (latitude, longitude) in demo_coordinates.items():
+            c.execute(
+                """UPDATE pickup_points SET latitude=COALESCE(latitude,?),
+                   longitude=COALESCE(longitude,?) WHERE name=?""",
+                (latitude, longitude, point_name),
+            )
+
         # Демонстрационный продавец — вымышленный участник модели, не контрагент RWB.
         c.execute(
             """INSERT OR IGNORE INTO sellers(name,category,contact)
@@ -299,21 +318,27 @@ def inventory_df():
 def points_df():
     with db() as c:
         return pd.read_sql_query(
-            "SELECT id,name AS Название,point_type AS Тип,city AS Город,active AS Активен FROM pickup_points ORDER BY id", c
+            "SELECT id,name AS Название,point_type AS Тип,city AS Город,active AS Активен,latitude AS Широта,longitude AS Долгота FROM pickup_points ORDER BY id", c
         )
 
 
-def add_pickup_point(name, point_type, city):
+def add_pickup_point(name, point_type, city, latitude=None, longitude=None):
     name = (name or "").strip()
     city = (city or "").strip()
     if not name or not city:
         raise ValueError("Укажите название точки и город.")
     if point_type not in ("Anchor", "Обычный", "Hub"):
         raise ValueError("Недопустимый тип точки.")
+    if (latitude is None) != (longitude is None):
+        raise ValueError("Укажите обе координаты или оставьте обе пустыми.")
+    if latitude is not None:
+        latitude, longitude = float(latitude), float(longitude)
+        if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+            raise ValueError("Координаты выходят за допустимый диапазон.")
     with db() as c:
         cur = c.execute(
-            "INSERT INTO pickup_points(name,point_type,city,active) VALUES(?,?,?,1)",
-            (name, point_type, city)
+            "INSERT INTO pickup_points(name,point_type,city,active,latitude,longitude) VALUES(?,?,?,1,?,?)",
+            (name, point_type, city, latitude, longitude)
         )
         point_id = cur.lastrowid
         if point_type in ("Anchor", "Hub"):
@@ -324,6 +349,40 @@ def add_pickup_point(name, point_type, city):
             )
         return point_id
 
+
+
+def local_delivery_demand_df(anchor_point_id=None):
+    """Aggregate waiting Anchor-origin Mesh orders by destination ordinary PVZ."""
+    with db() as c:
+        sql = """SELECT src.id AS anchor_id,src.name AS anchor_name,
+            dst.id AS point_id,dst.name AS name,dst.city AS city,
+            dst.latitude AS lat,dst.longitude AS lon,
+            COUNT(o.id) AS orders,
+            ROUND(COALESCE(SUM(pr.volume_l*o.quantity),0),2) AS volume_l
+            FROM orders o
+            JOIN pickup_points src ON src.id=o.source_point_id
+            JOIN pickup_points dst ON dst.id=o.destination_point_id
+            JOIN products pr ON pr.id=o.product_id
+            WHERE o.status='Ожидает партии' AND o.route LIKE 'Mesh%'
+              AND src.point_type='Anchor' AND dst.point_type='Обычный'"""
+        params = ()
+        if anchor_point_id is not None:
+            sql += " AND src.id=?"
+            params = (int(anchor_point_id),)
+        sql += """ GROUP BY src.id,src.name,dst.id,dst.name,dst.city,dst.latitude,dst.longitude
+                   ORDER BY dst.name"""
+        return pd.read_sql_query(sql, c, params=params)
+
+
+def save_point_coordinates(point_id, latitude, longitude):
+    latitude, longitude = float(latitude), float(longitude)
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        raise ValueError("Координаты выходят за допустимый диапазон.")
+    with db() as c:
+        cur = c.execute("UPDATE pickup_points SET latitude=?,longitude=? WHERE id=?",
+                        (latitude, longitude, int(point_id)))
+        if cur.rowcount != 1:
+            raise ValueError("Точка сети не найдена.")
 
 def orders_df():
     with db() as c:
