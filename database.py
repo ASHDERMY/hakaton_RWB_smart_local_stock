@@ -1156,114 +1156,92 @@ def run_daily_operations(order_limit=80, simulate_incident=False, destination_po
 
 
 def clear_temporary_simulation_data():
-    """Remove only orders created by persisted SHIFT runs and reverse their stock ledger."""
+    """Remove demo shifts and reverse their stock ledger without touching manual operations."""
     with db() as c:
-        runs = c.execute("SELECT run_code FROM operational_runs").fetchall()
-        run_codes = [row["run_code"] for row in runs]
+        run_codes={r["run_code"] for r in c.execute("SELECT run_code FROM operational_runs")}
+        state=c.execute("SELECT shift_code FROM simulation_control WHERE id=1").fetchone()
+        if state and state["shift_code"]:
+            run_codes.add(state["shift_code"])
+        run_codes.update(r["shift_code"] for r in c.execute(
+            "SELECT DISTINCT shift_code FROM simulation_events"))
         if not run_codes:
-            return {"runs": 0, "orders": 0, "incidents": 0, "returns": 0, "batches": 0}
-
-        order_codes = []
-        order_ids = []
-        batch_ids = set()
-        for run_code in run_codes:
-            rows = c.execute(
-                """SELECT id,order_code,batch_id FROM orders
-                WHERE order_code LIKE ?""",
-                (f"{run_code}-%",)
-            ).fetchall()
-            for row in rows:
-                order_ids.append(int(row["id"]))
-                order_codes.append(row["order_code"])
-                if row["batch_id"] is not None:
-                    batch_ids.add(int(row["batch_id"]))
-
-        if not order_ids:
             c.execute("DELETE FROM operational_runs")
-            return {"runs": len(run_codes), "orders": 0, "incidents": 0, "returns": 0, "batches": 0}
+            return {"runs":0,"orders":0,"incidents":0,"returns":0,"batches":0,"deliveries":0}
 
-        code_marks = ",".join("?" for _ in order_codes)
-        id_marks = ",".join("?" for _ in order_ids)
+        order_ids=[]; order_codes=[]; batch_ids=set()
+        for code in run_codes:
+            for row in c.execute(
+                "SELECT id,order_code,batch_id FROM orders WHERE order_code LIKE ?",
+                (f"{code}-%",)
+            ):
+                order_ids.append(int(row["id"])); order_codes.append(row["order_code"])
+                if row["batch_id"] is not None: batch_ids.add(int(row["batch_id"]))
 
-        # Reverse every stock movement attached to a simulated order.
-        movements = c.execute(
-            f"""SELECT point_id,product_id,movement_type,quantity
-            FROM stock_movements WHERE reference IN ({code_marks})""",
-            order_codes
-        ).fetchall()
-        for movement in movements:
-            qty = int(movement["quantity"])
-            point_id, product_id = int(movement["point_id"]), int(movement["product_id"])
-            kind = movement["movement_type"]
-            if kind == "reserve":
-                c.execute("UPDATE inventory SET reserved=MAX(0,reserved-?) WHERE point_id=? AND product_id=?",
-                          (qty, point_id, product_id))
-            elif kind == "release_reserve":
-                c.execute("UPDATE inventory SET reserved=reserved+? WHERE point_id=? AND product_id=?",
-                          (qty, point_id, product_id))
-            elif kind == "dispatch":
-                c.execute("UPDATE inventory SET quantity=quantity+?,reserved=reserved+? WHERE point_id=? AND product_id=?",
-                          (qty, qty, point_id, product_id))
-            elif kind == "arrival":
-                c.execute("UPDATE inventory SET quantity=MAX(0,quantity-?) WHERE point_id=? AND product_id=?",
-                          (qty, point_id, product_id))
-            elif kind == "issue":
-                c.execute("UPDATE inventory SET quantity=quantity+? WHERE point_id=? AND product_id=?",
-                          (qty, point_id, product_id))
+        # Reverse all movements whose reference belongs to one of the simulated shifts.
+        movement_rows=[]
+        for code in run_codes:
+            movement_rows.extend(c.execute(
+                """SELECT point_id,product_id,movement_type,quantity,reference
+                FROM stock_movements WHERE reference LIKE ?""",(f"{code}-%",)).fetchall())
+        for m in movement_rows:
+            q=int(m["quantity"]); pid=int(m["point_id"]); sku=int(m["product_id"]); kind=m["movement_type"]
+            if kind=="reserve":
+                c.execute("UPDATE inventory SET reserved=MAX(0,reserved-?) WHERE point_id=? AND product_id=?",(q,pid,sku))
+            elif kind=="release_reserve":
+                c.execute("UPDATE inventory SET reserved=reserved+? WHERE point_id=? AND product_id=?",(q,pid,sku))
+            elif kind=="dispatch":
+                c.execute("UPDATE inventory SET quantity=quantity+?,reserved=reserved+? WHERE point_id=? AND product_id=?",(q,q,pid,sku))
+            elif kind=="arrival":
+                c.execute("UPDATE inventory SET quantity=MAX(0,quantity-?) WHERE point_id=? AND product_id=?",(q,pid,sku))
+            elif kind=="issue":
+                c.execute("UPDATE inventory SET quantity=quantity+? WHERE point_id=? AND product_id=?",(q,pid,sku))
+            elif kind=="supplier_receipt":
+                c.execute("UPDATE inventory SET quantity=MAX(0,quantity-?) WHERE point_id=? AND product_id=?",(q,pid,sku))
+            elif kind=="hub_transfer_out":
+                c.execute("UPDATE inventory SET quantity=quantity+? WHERE point_id=? AND product_id=?",(q,pid,sku))
+            elif kind=="hub_transfer_in":
+                c.execute("UPDATE inventory SET quantity=MAX(0,quantity-?) WHERE point_id=? AND product_id=?",(q,pid,sku))
 
-        returns = c.execute(
-            f"SELECT id,order_id,quantity FROM returns WHERE order_id IN ({id_marks})",
-            order_ids
-        ).fetchall()
-        return_ids = [int(row["id"]) for row in returns]
-        for ret in returns:
-            # A usable return adds stock back; reverse that addition before deleting the return.
-            return_movements = c.execute(
-                """SELECT point_id,product_id,quantity FROM stock_movements
-                WHERE movement_type='return' AND reference=?""",
-                (str(ret["id"]),)
-            ).fetchall()
-            for movement in return_movements:
-                c.execute(
-                    "UPDATE inventory SET quantity=MAX(0,quantity-?) WHERE point_id=? AND product_id=?",
-                    (int(movement["quantity"]), int(movement["point_id"]), int(movement["product_id"]))
-                )
+        returns=[]
+        if order_ids:
+            marks=",".join("?" for _ in order_ids)
+            returns=c.execute(f"SELECT id,order_id FROM returns WHERE order_id IN ({marks})",order_ids).fetchall()
+            for ret in returns:
+                for m in c.execute(
+                    "SELECT point_id,product_id,quantity FROM stock_movements WHERE movement_type='return' AND reference=?",
+                    (str(ret["id"]),)
+                ):
+                    c.execute("UPDATE inventory SET quantity=MAX(0,quantity-?) WHERE point_id=? AND product_id=?",
+                              (int(m["quantity"]),int(m["point_id"]),int(m["product_id"])))
+            incidents_count=c.execute(f"SELECT COUNT(*) AS n FROM incidents WHERE order_id IN ({marks})",order_ids).fetchone()["n"]
+            c.execute(f"DELETE FROM incidents WHERE order_id IN ({marks})",order_ids)
+            c.execute(f"DELETE FROM returns WHERE order_id IN ({marks})",order_ids)
+            c.execute(f"DELETE FROM stock_movements WHERE reference IN ({','.join('?' for _ in order_codes)})",order_codes)
+            if returns:
+                return_marks=",".join("?" for _ in returns)
+                c.execute(f"DELETE FROM stock_movements WHERE movement_type='return' AND reference IN ({return_marks})",
+                          [str(r["id"]) for r in returns])
+        else:
+            incidents_count=0
 
-        incidents_count = c.execute(
-            f"SELECT COUNT(*) AS n FROM incidents WHERE order_id IN ({id_marks})",
-            order_ids
-        ).fetchone()["n"]
+        # Events reference orders, so remove them before deleting those orders.
+        for code in run_codes:
+            c.execute("DELETE FROM simulation_events WHERE shift_code=?",(code,))
+            c.execute("DELETE FROM supplier_deliveries WHERE reference LIKE ?",(f"{code}-SUP-%",))
+        if order_ids:
+            c.execute(f"DELETE FROM orders WHERE id IN ({','.join('?' for _ in order_ids)})",order_ids)
 
-        if return_ids:
-            return_marks = ",".join("?" for _ in return_ids)
-            c.execute(
-                f"DELETE FROM stock_movements WHERE movement_type='return' AND reference IN ({return_marks})",
-                [str(value) for value in return_ids]
-            )
-        c.execute(f"DELETE FROM stock_movements WHERE reference IN ({code_marks})", order_codes)
-        c.execute(f"DELETE FROM incidents WHERE order_id IN ({id_marks})", order_ids)
-        c.execute(f"DELETE FROM returns WHERE order_id IN ({id_marks})", order_ids)
-        c.execute(f"DELETE FROM orders WHERE id IN ({id_marks})", order_ids)
-
-        deleted_batches = 0
-        if batch_ids:
-            for batch_id in batch_ids:
-                remaining = c.execute(
-                    "SELECT COUNT(*) AS n FROM orders WHERE batch_id=?", (batch_id,)
-                ).fetchone()["n"]
-                if remaining == 0:
-                    c.execute("DELETE FROM mesh_batches WHERE id=?", (batch_id,))
-                    deleted_batches += 1
-
+        deleted_batches=0
+        for batch_id in batch_ids:
+            remaining=c.execute("SELECT COUNT(*) AS n FROM orders WHERE batch_id=?",(batch_id,)).fetchone()["n"]
+            if remaining==0:
+                c.execute("DELETE FROM mesh_batches WHERE id=?",(batch_id,)); deleted_batches+=1
         c.execute("DELETE FROM operational_runs")
-        return {
-            "runs": len(run_codes),
-            "orders": len(order_ids),
-            "incidents": int(incidents_count),
-            "returns": len(returns),
-            "batches": deleted_batches,
-        }
-
+        c.execute("""UPDATE simulation_control SET running=0,shift_code=NULL,tick_no=0,
+            started_at=NULL,stopped_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=1""")
+        return {"runs":len(run_codes),"orders":len(order_ids),"incidents":int(incidents_count),
+                "returns":len(returns),"batches":deleted_batches,
+                "deliveries":sum(1 for code in run_codes for _ in [code])}
 
 def simulation_state():
     with db() as c:
