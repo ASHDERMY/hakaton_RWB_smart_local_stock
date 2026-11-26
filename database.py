@@ -170,6 +170,7 @@ def init_db():
         _add_column(c, "orders", "estimated_cost REAL NOT NULL DEFAULT 0")
         _add_column(c, "orders", "updated_at TEXT")
         _add_column(c, "orders", "batch_id INTEGER")
+        _add_column(c, "simulation_control", "start_day INTEGER NOT NULL DEFAULT 1")
         _add_column(c, "incidents", "action_plan TEXT")
         _add_column(c, "incidents", "applied_route TEXT")
         _add_column(c, "incidents", "applied INTEGER NOT NULL DEFAULT 0")
@@ -1350,16 +1351,68 @@ def simulation_state():
 
 
 
-def start_continuous_simulation():
+def prepare_mature_simulation():
+    """Create a transparent day-150 demo baseline without replaying 149 days."""
+    # If the workspace has no catalogue/network yet, load the built-in demo entities.
+    products = products_df()
+    points = points_df()
+    if products.empty or not (points["Тип"] == "Anchor").any() or not (points["Тип"] == "Hub").any():
+        seed_demo()
+        products = products_df()
+        points = points_df()
+    if products.empty:
+        raise ValueError("Нет товаров для симуляции. Добавьте товары или загрузите демоданные.")
+    anchors = points[(points["Тип"] == "Anchor") & (points["Активен"] == 1)]
+    hubs = points[(points["Тип"] == "Hub") & (points["Активен"] == 1)]
+    if anchors.empty or hubs.empty:
+        raise ValueError("Для зрелой сети нужны хотя бы один активный Anchor и один Hub.")
+
+    created_units = 0
+    with db() as c:
+        for _, point in pd.concat([anchors, hubs]).iterrows():
+            point_id = int(point["id"])
+            is_anchor = point["Тип"] == "Anchor"
+            for _, product in products.iterrows():
+                product_id = int(product["id"])
+                target = 45 if is_anchor else 180
+                c.execute(
+                    """INSERT OR IGNORE INTO inventory(point_id,product_id,quantity,reserved,incoming)
+                       VALUES(?,?,0,0,0)""",
+                    (point_id, product_id),
+                )
+                row = c.execute(
+                    """SELECT quantity,reserved,incoming FROM inventory
+                       WHERE point_id=? AND product_id=?""",
+                    (point_id, product_id),
+                ).fetchone()
+                if row and int(row["quantity"]) == 0 and int(row["reserved"]) == 0 and int(row["incoming"]) == 0:
+                    c.execute(
+                        "UPDATE inventory SET quantity=? WHERE point_id=? AND product_id=?",
+                        (target, point_id, product_id),
+                    )
+                    created_units += target
+    return {"products": len(products), "anchors": len(anchors), "hubs": len(hubs),
+            "opening_units": created_units}
+
+
+def start_continuous_simulation(start_day=1):
     from datetime import datetime
     import uuid
+    start_day = int(start_day)
+    if start_day not in (1, 150):
+        raise ValueError("Можно начать только с 1-го или 150-го дня.")
+    baseline = prepare_mature_simulation() if start_day == 150 else None
     code="LIVE-"+datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+uuid.uuid4().hex[:4].upper()
     with db() as c:
-        c.execute("""UPDATE simulation_control SET running=1,shift_code=?,tick_no=0,
-            started_at=CURRENT_TIMESTAMP,stopped_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=1""",(code,))
-        c.execute("INSERT INTO simulation_events(shift_code,tick_no,event_type,message) VALUES(?,0,'Смена','Запущена непрерывная диспетчерская смена')",(code,))
+        c.execute("""UPDATE simulation_control SET running=1,shift_code=?,tick_no=0,start_day=?,
+            started_at=CURRENT_TIMESTAMP,stopped_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=1""",(code,start_day))
+        message = ("Запущена симуляция с 150-го дня: сформирована стартовая конфигурация зрелой сети "
+                   f"(товаров: {baseline['products']}, Anchor: {baseline['anchors']}, Hub: {baseline['hubs']}, "
+                   f"добавлено стартовых единиц: {baseline['opening_units']})."
+                   if baseline else "Запущена симуляция с 1-го дня внедрения Smart Local Stock.")
+        c.execute("INSERT INTO simulation_events(shift_code,tick_no,event_type,message) VALUES(?,0,'Смена',?)",(code,message))
         c.execute("""INSERT INTO operational_runs(run_code,notes)
-            VALUES(?,?)""",(code,"Непрерывная диспетчерская смена; статистика обновляется по тактам."))
+            VALUES(?,?)""",(code,message))
     return code
 
 
