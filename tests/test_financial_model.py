@@ -50,6 +50,15 @@ class FinancialModelTests(unittest.TestCase):
         )
         self.assertAlmostEqual(fee, 3.6666666667, places=6)
 
+    def test_partial_mesh_share_allocates_system_cost_over_all_network_orders(self):
+        fee = break_even_anchor_fee(
+            orders_per_month=1200, mesh_share_pct=50, anchors=3, batch_orders=80,
+            trip_cost=2400, hub_cost_per_order=62, variable_cost=14.5,
+            replenishment_per_order=9, storage_per_order=2.5,
+            monthly_system_cost=10000,
+        )
+        self.assertAlmostEqual(fee, -8.3333333333, places=6)
+
     def test_forecast_reports_negative_roi_and_npv_when_full_costs_exceed_hub(self):
         result = forecast_financials(
             monthly_orders=1200, mesh_share_pct=100, anchors=3, batch_orders=80,
