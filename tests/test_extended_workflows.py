@@ -80,6 +80,19 @@ class ExtendedWorkflowTests(unittest.TestCase):
         self.assertGreater(len(database.products_df()), 0)
         self.assertGreater(len(database.points_df()), 0)
 
+    def test_continuous_simulation_start_tick_stop_and_timeline(self):
+        code = database.start_continuous_simulation()
+        state, _ = database.simulation_state()
+        self.assertTrue(state["running"])
+        self.assertEqual(state["shift_code"], code)
+        tick = database.continuous_simulation_tick()
+        self.assertTrue(tick["running"])
+        self.assertEqual(tick["tick"], 1)
+        self.assertGreaterEqual(len(database.simulation_timeline_df()), 2)
+        self.assertTrue(database.stop_continuous_simulation())
+        state, _ = database.simulation_state()
+        self.assertFalse(state["running"])
+
     def test_route_incident_creates_plan_and_changes_mesh_route_via_hub(self):
         for number in range(1, 81):
             database.create_order(
