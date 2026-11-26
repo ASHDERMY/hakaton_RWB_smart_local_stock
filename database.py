@@ -122,6 +122,19 @@ def init_db():
             FOREIGN KEY(product_id) REFERENCES products(id),
             FOREIGN KEY(hub_point_id) REFERENCES pickup_points(id)
         );
+        CREATE TABLE IF NOT EXISTS operational_runs(
+            id INTEGER PRIMARY KEY,
+            run_code TEXT NOT NULL UNIQUE,
+            created_orders INTEGER NOT NULL DEFAULT 0,
+            failed_orders INTEGER NOT NULL DEFAULT 0,
+            dispatched_orders INTEGER NOT NULL DEFAULT 0,
+            ready_orders INTEGER NOT NULL DEFAULT 0,
+            issued_orders INTEGER NOT NULL DEFAULT 0,
+            incidents_created INTEGER NOT NULL DEFAULT 0,
+            estimated_cost REAL NOT NULL DEFAULT 0,
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
         """)
         # Миграции для SQLite-баз, созданных предыдущими версиями MVP.
         _add_column(c, "pickup_points", "active INTEGER NOT NULL DEFAULT 1")
@@ -894,3 +907,219 @@ def finance_summary():
         COALESCE(SUM(CASE WHEN route='Mesh' THEN 1 ELSE 0 END),0) AS mesh_orders,
         COALESCE(SUM(CASE WHEN route='Hub' THEN 1 ELSE 0 END),0) AS hub_orders
         FROM orders WHERE status!='Отменён'""").fetchone())
+
+
+def operational_snapshot():
+    """Return a compact live snapshot for the operator's control room."""
+    with db() as c:
+        order_rows = c.execute("""
+            SELECT status, route, COUNT(*) AS n, COALESCE(SUM(estimated_cost),0) AS cost
+            FROM orders GROUP BY status, route
+        """).fetchall()
+        status_counts = {r["status"]: int(r["n"]) for r in order_rows}
+        route_counts = {}
+        total_cost = 0.0
+        total_orders = 0
+        for row in order_rows:
+            route = row["route"] or "Не назначен"
+            route_counts[route] = route_counts.get(route, 0) + int(row["n"])
+            total_orders += int(row["n"])
+            total_cost += float(row["cost"] or 0)
+
+        inventory = c.execute("""
+            SELECT COUNT(*) AS sku_rows,
+                   COALESCE(SUM(quantity),0) AS physical_units,
+                   COALESCE(SUM(reserved),0) AS reserved_units,
+                   COALESCE(SUM(incoming),0) AS incoming_units,
+                   COALESCE(SUM(CASE WHEN quantity+incoming-reserved<=5 THEN 1 ELSE 0 END),0) AS low_stock_rows
+            FROM inventory
+        """).fetchone()
+        batches = c.execute("""
+            SELECT COUNT(*) AS open_batches,
+                   COALESCE(SUM(CASE WHEN status='waiting' THEN 1 ELSE 0 END),0) AS waiting_batches,
+                   COALESCE(SUM(CASE WHEN status='blocked_hub_stock' THEN 1 ELSE 0 END),0) AS blocked_batches
+            FROM mesh_batches WHERE status IN ('waiting','blocked_hub_stock')
+        """).fetchone()
+        incidents = c.execute("""
+            SELECT COUNT(*) AS open_incidents,
+                   COALESCE(SUM(CASE WHEN applied=1 THEN 1 ELSE 0 END),0) AS rerouted_incidents
+            FROM incidents WHERE status='open'
+        """).fetchone()
+        returns = c.execute("""
+            SELECT COUNT(*) AS pending_returns FROM returns WHERE status='pending'
+        """).fetchone()
+        deliveries = c.execute("""
+            SELECT COUNT(*) AS pending_deliveries FROM supplier_deliveries
+            WHERE status='Ожидает приёмки'
+        """).fetchone()
+        points = c.execute("""
+            SELECT COUNT(*) AS active_points,
+                   SUM(CASE WHEN point_type='Anchor' THEN 1 ELSE 0 END) AS anchors,
+                   SUM(CASE WHEN point_type='Hub' THEN 1 ELSE 0 END) AS hubs,
+                   SUM(CASE WHEN point_type='Обычный' THEN 1 ELSE 0 END) AS pickup_points
+            FROM pickup_points WHERE active=1
+        """).fetchone()
+        today = c.execute("""
+            SELECT COUNT(*) AS orders_today,
+                   COALESCE(SUM(estimated_cost),0) AS cost_today
+            FROM orders WHERE date(created_at)=date('now','localtime')
+        """).fetchone()
+        today_runs = c.execute("""
+            SELECT COUNT(*) AS runs_today,
+                   COALESCE(SUM(created_orders),0) AS simulated_orders
+            FROM operational_runs WHERE date(created_at)=date('now','localtime')
+        """).fetchone()
+        return {
+            "status_counts": status_counts,
+            "route_counts": route_counts,
+            "total_orders": total_orders,
+            "estimated_cost": total_cost,
+            "inventory": dict(inventory),
+            "batches": dict(batches),
+            "incidents": dict(incidents),
+            "returns": dict(returns),
+            "deliveries": dict(deliveries),
+            "points": dict(points),
+            "today": dict(today),
+            "today_runs": dict(today_runs),
+        }
+
+
+def operational_runs_df(limit=20):
+    with db() as c:
+        return pd.read_sql_query("""
+            SELECT run_code AS 'Смена',created_orders AS 'Создано заказов',
+            failed_orders AS 'Не создано',dispatched_orders AS 'Отправлено',
+            ready_orders AS 'Прибыло в ПВЗ',issued_orders AS 'Выдано',
+            incidents_created AS 'Инцидентов',ROUND(estimated_cost,2) AS 'Расчётные затраты, ₽',
+            notes AS 'Результат',created_at AS 'Время запуска'
+            FROM operational_runs ORDER BY id DESC LIMIT ?
+        """, c, params=(int(limit),))
+
+
+def run_daily_operations(order_limit=40, simulate_incident=False):
+    """Run one persisted demo work shift using current stock, routing rules and order lifecycle."""
+    from datetime import datetime
+    import uuid
+
+    order_limit = int(order_limit)
+    if not 1 <= order_limit <= 500:
+        raise ValueError("Размер смены должен быть от 1 до 500 заказов.")
+
+    settings = {key: float(item["value"]) for key, item in settings_dict().items()}
+    candidates = inventory_df()
+    points = points_df()
+    products = products_df()
+    anchors = points[(points["Тип"] == "Anchor") & (points["Активен"] == 1)]
+    destinations = points[(points["Тип"] == "Обычный") & (points["Активен"] == 1)]
+    if candidates.empty or products.empty or anchors.empty or destinations.empty:
+        raise ValueError("Для запуска смены нужны товары, активный Anchor, обычный ПВЗ и складские остатки.")
+
+    # Map actual available stock to the Anchor selected by the normal order engine.
+    stock = candidates[
+        (candidates["Тип"] == "Anchor") & (candidates["Доступно"] > 0)
+    ].copy()
+    if stock.empty:
+        raise ValueError("На Anchor нет доступного запаса. Сначала пополните локальный склад.")
+    stock = stock.merge(products[["id", "SKU", "Объём, л"]], on="SKU", how="inner")
+    destination_ids = destinations["id"].astype(int).tolist()
+    prefix = "SHIFT-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4].upper()
+
+    created_codes = []
+    failed = 0
+    candidate_rows = stock.to_dict("records")
+    # Spread orders across SKUs and destination points while respecting live stock.
+    for number in range(1, order_limit + 1):
+        row = candidate_rows[(number - 1) % len(candidate_rows)]
+        destination_id = destination_ids[(number - 1) % len(destination_ids)]
+        code = f"{prefix}-{number:04d}"
+        try:
+            create_order(code, int(row["id"]), destination_id, 1, settings)
+            created_codes.append(code)
+            row["Доступно"] = int(row["Доступно"]) - 1
+            if row["Доступно"] <= 0:
+                candidate_rows = [item for item in candidate_rows if item["Доступно"] > 0]
+                if not candidate_rows:
+                    break
+        except ValueError:
+            failed += 1
+            # A given destination/product combination may be unavailable at the Hub.
+            row["Доступно"] = 0
+            candidate_rows = [item for item in candidate_rows if item["Доступно"] > 0]
+            if not candidate_rows:
+                break
+
+    if not created_codes:
+        raise ValueError("Не удалось создать заказы: проверьте остатки Anchor и Hub, а также точки назначения.")
+
+    batch_results = process_mesh_batches()
+    placeholders = ",".join("?" for _ in created_codes)
+    with db() as c:
+        rows = c.execute(
+            f"SELECT id,status,route FROM orders WHERE order_code IN ({placeholders}) ORDER BY id",
+            created_codes
+        ).fetchall()
+
+    # Hub orders are reserved immediately; move them into transport.
+    dispatched = []
+    for row in rows:
+        if row["status"] == "Зарезервирован":
+            update_order_status(int(row["id"]), "В пути")
+            dispatched.append(int(row["id"]))
+        elif row["status"] == "В пути":
+            dispatched.append(int(row["id"]))
+
+    incident_count = 0
+    if simulate_incident:
+        with db() as c:
+            incident_candidate = c.execute(
+                f"""SELECT id FROM orders WHERE order_code IN ({placeholders})
+                AND status='В пути' AND route LIKE 'Mesh%' ORDER BY id LIMIT 1""",
+                created_codes
+            ).fetchone()
+        if incident_candidate:
+            add_incident(
+                int(incident_candidate["id"]),
+                "Перекрытие дороги",
+                "Сценарий смены: на прямом участке обнаружено перекрытие дороги, требуется объезд."
+            )
+            incident_count = 1
+
+    # Simulate a normal part of the shift: some shipments arrive and a portion is issued.
+    ready_ids = []
+    issued_ids = []
+    for index, order_id in enumerate(dispatched):
+        if index % 3 == 0:
+            update_order_status(order_id, "Готов к выдаче")
+            ready_ids.append(order_id)
+            if index % 2 == 0:
+                update_order_status(order_id, "Выдан")
+                issued_ids.append(order_id)
+
+    with db() as c:
+        costs = c.execute(
+            f"SELECT COALESCE(SUM(estimated_cost),0) AS total FROM orders WHERE order_code IN ({placeholders})",
+            created_codes
+        ).fetchone()["total"]
+        c.execute("""
+            INSERT INTO operational_runs(
+                run_code,created_orders,failed_orders,dispatched_orders,ready_orders,
+                issued_orders,incidents_created,estimated_cost,notes
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+        """, (
+            prefix, len(created_codes), failed, len(dispatched), len(ready_ids),
+            len(issued_ids), incident_count, float(costs),
+            f"Проверено партий: {len(batch_results)}; смоделирована смена на текущих остатках."
+        ))
+
+    return {
+        "run_code": prefix,
+        "created_orders": len(created_codes),
+        "failed_orders": failed,
+        "dispatched_orders": len(dispatched),
+        "ready_orders": len(ready_ids),
+        "issued_orders": len(issued_ids),
+        "incidents_created": incident_count,
+        "estimated_cost": float(costs),
+        "batch_results": batch_results,
+    }
