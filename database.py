@@ -80,6 +80,8 @@ def init_db():
             classification TEXT NOT NULL, note TEXT
         );
         """)
+        # Миграции для баз, созданных предыдущими версиями MVP.
+        _add_column(c, "pickup_points", "active INTEGER NOT NULL DEFAULT 1")
         _add_column(c, "orders", "source_point_id INTEGER")
         _add_column(c, "orders", "estimated_cost REAL NOT NULL DEFAULT 0")
         _add_column(c, "orders", "updated_at TEXT")
