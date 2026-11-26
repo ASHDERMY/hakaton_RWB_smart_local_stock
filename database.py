@@ -992,6 +992,7 @@ def operational_snapshot():
             SELECT COUNT(*) AS orders_today,
                    COALESCE(SUM(estimated_cost),0) AS cost_today
             FROM orders WHERE date(created_at)=date('now','localtime')
+              AND status!='Отменён'
         """).fetchone()
         today_runs = c.execute("""
             SELECT COUNT(*) AS runs_today,
