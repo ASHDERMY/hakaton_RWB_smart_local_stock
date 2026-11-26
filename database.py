@@ -334,8 +334,10 @@ def _close_batch(c, batch_id, settings, force=False):
                 return {"decision": "blocked_hub_stock", "reason": reason}
 
         for order in orders:
-            c.execute("UPDATE inventory SET reserved=reserved-? WHERE point_id=? AND product_id=? AND reserved>=?",
-                      (order["quantity"], order["source_point_id"], order["product_id"], order["quantity"]))
+            released = c.execute("UPDATE inventory SET reserved=reserved-? WHERE point_id=? AND product_id=? AND reserved>=?",
+                                 (order["quantity"], order["source_point_id"], order["product_id"], order["quantity"]))
+            if released.rowcount != 1:
+                raise ValueError(f"Не удалось снять резерв Anchor для заказа {order['order_code']}.")
             c.execute("INSERT OR IGNORE INTO inventory(point_id,product_id,quantity) VALUES(?,?,0)",
                       (hub["id"], order["product_id"]))
             c.execute("UPDATE inventory SET reserved=reserved+? WHERE point_id=? AND product_id=?",
