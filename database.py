@@ -1265,17 +1265,30 @@ def clear_temporary_simulation_data():
                 "returns":len(returns),"batches":deleted_batches,
                 "deliveries":sum(1 for code in run_codes for _ in [code])}
 
+def simulation_control_state():
+    """Return only the simulation control row; avoids loading the event log on every poll."""
+    with db() as c:
+        c.execute("INSERT OR IGNORE INTO simulation_control(id,running,tick_no) VALUES(1,0,0)")
+        row = c.execute("SELECT * FROM simulation_control WHERE id=1").fetchone()
+        return dict(row) if row else {
+            "id": 1, "running": 0, "shift_code": None, "tick_no": 0
+        }
+
+
 def simulation_state():
     with db() as c:
-        # Self-heal control row in older or manually cleaned local databases.
         c.execute("INSERT OR IGNORE INTO simulation_control(id,running,tick_no) VALUES(1,0,0)")
-        row=c.execute("SELECT * FROM simulation_control WHERE id=1").fetchone()
-        events=pd.read_sql_query(
+        row = c.execute("SELECT * FROM simulation_control WHERE id=1").fetchone()
+        events = pd.read_sql_query(
             """SELECT e.tick_no AS 'Такт',e.event_type AS Тип,e.message AS Событие,
-            COALESCE(o.order_code,'—') AS Заказ,e.created_at AS Время
-            FROM simulation_events e LEFT JOIN orders o ON o.id=e.order_id
-            ORDER BY e.id DESC LIMIT 80""",c)
-        return (dict(row) if row else {"id":1,"running":0,"shift_code":None,"tick_no":0}),events
+               COALESCE(o.order_code,'—') AS Заказ,e.created_at AS Время
+               FROM simulation_events e LEFT JOIN orders o ON o.id=e.order_id
+               ORDER BY e.id DESC LIMIT 80""", c
+        )
+        return (dict(row) if row else {
+            "id": 1, "running": 0, "shift_code": None, "tick_no": 0
+        }), events
+
 
 
 def start_continuous_simulation():
@@ -1408,126 +1421,203 @@ def _advance_supply_transports(shift_code,tick_no):
 
 
 def continuous_simulation_tick():
-    """Advance one persistent tick: supply chain, orders, transport, incidents and returns."""
+    """Advance one bounded simulation tick with batched progress writes."""
     import random
-    from datetime import datetime
-    with db() as c:
-        state=c.execute("SELECT * FROM simulation_control WHERE id=1").fetchone()
-        if not state or not state["running"]:
-            return {"running":False,"tick":0}
-        shift_code=state["shift_code"]
-        tick_no=int(state["tick_no"])+1
-        c.execute("UPDATE simulation_control SET tick_no=?,updated_at=CURRENT_TIMESTAMP WHERE id=1",(tick_no,))
-    _auto_supplier_and_anchor_replenishment(tick_no,shift_code)
-    _advance_supply_transports(shift_code,tick_no)
 
-    # Generate one order every 4 seconds (one order per two 2-second ticks).
-    # Keep a destination stable for one target-sized block so Mesh orders can consolidate
-    # into a batch instead of being scattered across every demo pickup point.
+    with db() as c:
+        state = c.execute("SELECT * FROM simulation_control WHERE id=1").fetchone()
+        if not state or not state["running"]:
+            return {"running": False, "tick": 0}
+        shift_code = state["shift_code"]
+        tick_no = int(state["tick_no"]) + 1
+        c.execute(
+            "UPDATE simulation_control SET tick_no=?,updated_at=CURRENT_TIMESTAMP WHERE id=1",
+            (tick_no,),
+        )
+
+    _auto_supplier_and_anchor_replenishment(tick_no, shift_code)
+    _advance_supply_transports(shift_code, tick_no)
+
+    # One order every two ticks. Destinations are sampled independently so
+    # the demo represents demand across the whole local PVZ network.
     if tick_no % 2 == 1:
-        points=points_df()
-        destinations=points[(points["Тип"]=="Обычный") & (points["Активен"]==1)].sort_values("id")
-        products=products_df()
-        settings={k:float(v["value"]) for k,v in settings_dict().items()}
+        destinations = points_df()
+        destinations = destinations[
+            (destinations["Тип"] == "Обычный") & (destinations["Активен"] == 1)
+        ]
+        products = products_df()
+        settings = {k: float(v["value"]) for k, v in settings_dict().items()}
         if not destinations.empty and not products.empty:
-            destination_index=_simulation_destination_index(
-                tick_no,len(destinations),int(settings["batch_target_orders"]),order_interval_ticks=2)
-            destination=destinations.iloc[destination_index]
-            product=products.sample(1).iloc[0]
-            code=f"{shift_code}-O-{tick_no:05d}"
+            destination = destinations.sample(1).iloc[0]
+            product = products.sample(1).iloc[0]
+            code = f"{shift_code}-O-{tick_no:05d}"
+            # A small simulation-only batch target keeps the demo observable
+            # without changing the model's saved business settings.
+            simulation_settings = dict(settings)
+            simulation_settings["batch_target_orders"] = min(
+                max(1, int(settings["batch_target_orders"])), 6
+            )
             try:
-                create_order(code,int(product["id"]),int(destination["id"]),1,settings)
+                create_order(
+                    code, int(product["id"]), int(destination["id"]), 1,
+                    simulation_settings,
+                )
                 with db() as c:
-                    created_id=c.execute("SELECT id FROM orders WHERE order_code=?",(code,)).fetchone()["id"]
-                    _simulation_event(c,shift_code,tick_no,"Новый заказ",
-                                      f"Создан заказ {code} для консолидации в {destination['Название']}; маршрут определён правилами Mesh/Hub",created_id)
+                    created = c.execute(
+                        "SELECT id FROM orders WHERE order_code=?", (code,)
+                    ).fetchone()
+                    _simulation_event(
+                        c, shift_code, tick_no, "Новый заказ",
+                        f"Создан заказ {code} в ПВЗ «{destination['Название']}»; маршрут выбран по расчётным условиям",
+                        int(created["id"]) if created else None,
+                    )
             except ValueError as exc:
                 with db() as c:
-                    _simulation_event(c,shift_code,tick_no,"Дефицит запаса",
-                                      f"Заказ не создан: {str(exc)[:180]}")
+                    _simulation_event(
+                        c, shift_code, tick_no, "Дефицит запаса",
+                        f"Заказ не создан: {str(exc)[:180]}",
+                    )
+
     process_mesh_batches()
 
-    # Dispatch Hub reservations; Mesh batches are dispatched by their own evaluator.
+    # Dispatch Hub reservations in a small bounded batch.
     with db() as c:
-        reserved=c.execute("""SELECT id,order_code FROM orders WHERE status='Зарезервирован'
-            AND order_code LIKE ? ORDER BY id LIMIT 10""",(f"{shift_code}-%",)).fetchall()
+        reserved = c.execute(
+            """SELECT id,order_code FROM orders
+               WHERE status='Зарезервирован' AND order_code LIKE ?
+               ORDER BY id LIMIT 12""",
+            (f"{shift_code}-%",),
+        ).fetchall()
     for row in reserved:
-        update_order_status(int(row["id"]),"В пути")
+        update_order_status(int(row["id"]), "В пути")
         with db() as c:
-            _simulation_event(c,shift_code,tick_no,"Отправка",
-                              f"Заказ {row['order_code']} покинул Hub",int(row["id"]))
+            _simulation_event(
+                c, shift_code, tick_no, "Отправка",
+                f"Заказ {row['order_code']} покинул Hub", int(row["id"]),
+            )
 
-    # Move all in-transit orders on a short visual route timeline.
+    # Read and update all moving vehicles in one SQLite transaction rather
+    # than opening a connection and issuing several queries for every order.
+    arrived = []
+    delayed = []
     with db() as c:
-        moving=c.execute("""SELECT id,order_code,route FROM orders
-            WHERE status='В пути' AND order_code LIKE ? ORDER BY id""",(f"{shift_code}-%",)).fetchall()
-    for order in moving:
-        with db() as c:
-            c.execute("INSERT OR IGNORE INTO simulation_vehicle_progress(order_id,progress) VALUES(?,0)",(order["id"],))
-            progress=float(c.execute("SELECT progress FROM simulation_vehicle_progress WHERE order_id=?",(order["id"],)).fetchone()["progress"])
-            next_progress=min(1.0,progress+random.uniform(0.12,0.24))
-            c.execute("UPDATE simulation_vehicle_progress SET progress=?,updated_at=CURRENT_TIMESTAMP WHERE order_id=?",
-                      (next_progress,order["id"]))
-        if next_progress>=1:
-            update_order_status(int(order["id"]),"Готов к выдаче")
+        moving = c.execute(
+            """SELECT o.id,o.order_code,o.route,
+                      COALESCE(v.progress,0) AS progress
+               FROM orders o
+               LEFT JOIN simulation_vehicle_progress v ON v.order_id=o.id
+               WHERE o.status='В пути' AND o.order_code LIKE ?
+               ORDER BY o.id""",
+            (f"{shift_code}-%",),
+        ).fetchall()
+        for order in moving:
+            progress = min(1.0, float(order["progress"]) + random.uniform(0.18, 0.30))
+            c.execute(
+                """INSERT INTO simulation_vehicle_progress(order_id,progress)
+                   VALUES(?,?) ON CONFLICT(order_id) DO UPDATE SET
+                   progress=excluded.progress,updated_at=CURRENT_TIMESTAMP""",
+                (int(order["id"]), progress),
+            )
+            if progress >= 1.0:
+                arrived.append((int(order["id"]), order["order_code"]))
+            elif "Mesh" in str(order["route"]) and random.random() < 0.012:
+                delayed.append((int(order["id"]), order["order_code"]))
+
+    for order_id, order_code in arrived:
+        try:
+            update_order_status(order_id, "Готов к выдаче")
             with db() as c:
-                _simulation_event(c,shift_code,tick_no,"Прибытие в ПВЗ",
-                                  f"Заказ {order['order_code']} прибыл в пункт назначения",int(order["id"]))
-        else:
-            if random.random()<0.08 and "Mesh" in str(order["route"]):
-                try:
-                    add_incident(int(order["id"]),"Дорожная задержка","Случайная задержка движения на маршруте; проверка обхода через Hub.")
-                    with db() as c:
-                        _simulation_event(c,shift_code,tick_no,"Инцидент",
-                                          f"Для заказа {order['order_code']} зарегистрирована дорожная задержка",int(order["id"]))
-                except ValueError:
-                    pass
+                _simulation_event(
+                    c, shift_code, tick_no, "Прибытие в ПВЗ",
+                    f"Заказ {order_code} прибыл в пункт назначения", order_id,
+                )
+        except ValueError:
+            pass
+
+    for order_id, order_code in delayed:
+        try:
+            add_incident(
+                order_id, "Дорожная задержка",
+                "Случайная задержка движения на маршруте; проверка обхода через Hub.",
+            )
+            with db() as c:
+                _simulation_event(
+                    c, shift_code, tick_no, "Инцидент",
+                    f"Для заказа {order_code} зарегистрирована дорожная задержка", order_id,
+                )
+        except ValueError:
+            pass
 
     # Customer pickup and occasional return flow.
     with db() as c:
-        ready=c.execute("""SELECT id,order_code,quantity FROM orders WHERE status='Готов к выдаче'
-            AND order_code LIKE ? ORDER BY id LIMIT 8""",(f"{shift_code}-%",)).fetchall()
+        ready = c.execute(
+            """SELECT id,order_code FROM orders
+               WHERE status='Готов к выдаче' AND order_code LIKE ?
+               ORDER BY id LIMIT 12""",
+            (f"{shift_code}-%",),
+        ).fetchall()
     for order in ready:
-        if random.random()<0.45:
-            update_order_status(int(order["id"]),"Выдан")
-            with db() as c:
-                _simulation_event(c,shift_code,tick_no,"Выдача покупателю",
-                                  f"Заказ {order['order_code']} выдан покупателю",int(order["id"]))
-            if random.random()<0.10:
-                try:
-                    ret_id=create_return(int(order["id"]),1,random.choice([
-                        "Не подошёл товар","Повреждение упаковки","Отказ покупателя","Ошибочный заказ"
-                    ]))
-                    process_return(ret_id,random.choice(["Пригоден","Повреждён"]))
+        if random.random() < 0.45:
+            try:
+                update_order_status(int(order["id"]), "Выдан")
+                with db() as c:
+                    _simulation_event(
+                        c, shift_code, tick_no, "Выдача покупателю",
+                        f"Заказ {order['order_code']} выдан покупателю", int(order["id"]),
+                    )
+                if random.random() < 0.10:
+                    ret_id = create_return(
+                        int(order["id"]), 1,
+                        random.choice([
+                            "Не подошёл товар", "Повреждение упаковки",
+                            "Отказ покупателя", "Ошибочный заказ",
+                        ]),
+                    )
+                    process_return(ret_id, random.choice(["Пригоден", "Повреждён"]))
                     with db() as c:
-                        _simulation_event(c,shift_code,tick_no,"Возврат",
-                                          f"Оформлен и обработан возврат по заказу {order['order_code']}",int(order["id"]))
-                except ValueError:
-                    pass
+                        _simulation_event(
+                            c, shift_code, tick_no, "Возврат",
+                            f"Оформлен и обработан возврат по заказу {order['order_code']}",
+                            int(order["id"]),
+                        )
+            except ValueError:
+                pass
 
     with db() as c:
-        # Complete shift aggregates are persisted for the control-room report.
-        counts=c.execute("""SELECT
-            COUNT(*) AS total,
-            SUM(CASE WHEN status='В пути' THEN 1 ELSE 0 END) AS moving,
-            SUM(CASE WHEN status='Готов к выдаче' THEN 1 ELSE 0 END) AS ready,
-            SUM(CASE WHEN status='Выдан' THEN 1 ELSE 0 END) AS issued,
-            COALESCE(SUM(estimated_cost),0) AS costs
-            FROM orders WHERE order_code LIKE ?""",(f"{shift_code}-%",)).fetchone()
-        incidents_total=c.execute("SELECT COUNT(*) AS n FROM incidents WHERE order_id IN (SELECT id FROM orders WHERE order_code LIKE ?)",(f"{shift_code}-%",)).fetchone()["n"]
-        c.execute("""UPDATE operational_runs SET created_orders=?,failed_orders=?,
-            dispatched_orders=?,ready_orders=?,issued_orders=?,incidents_created=?,estimated_cost=?
-            WHERE run_code=?""",
-            (int(counts["total"] or 0),0,
-             int(counts["moving"] or 0)+int(counts["ready"] or 0)+int(counts["issued"] or 0),
-             int(counts["ready"] or 0),int(counts["issued"] or 0),int(incidents_total),
-             float(counts["costs"] or 0),shift_code))
+        counts = c.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN status='В пути' THEN 1 ELSE 0 END) AS moving,
+                      SUM(CASE WHEN status='Готов к выдаче' THEN 1 ELSE 0 END) AS ready,
+                      SUM(CASE WHEN status='Выдан' THEN 1 ELSE 0 END) AS issued,
+                      COALESCE(SUM(estimated_cost),0) AS costs
+               FROM orders WHERE order_code LIKE ?""",
+            (f"{shift_code}-%",),
+        ).fetchone()
+        incidents_total = c.execute(
+            """SELECT COUNT(*) AS n FROM incidents
+               WHERE order_id IN (SELECT id FROM orders WHERE order_code LIKE ?)""",
+            (f"{shift_code}-%",),
+        ).fetchone()["n"]
+        c.execute(
+            """UPDATE operational_runs SET created_orders=?,failed_orders=?,
+               dispatched_orders=?,ready_orders=?,issued_orders=?,incidents_created=?,estimated_cost=?
+               WHERE run_code=?""",
+            (
+                int(counts["total"] or 0), 0,
+                int(counts["moving"] or 0) + int(counts["ready"] or 0) + int(counts["issued"] or 0),
+                int(counts["ready"] or 0), int(counts["issued"] or 0),
+                int(incidents_total), float(counts["costs"] or 0), shift_code,
+            ),
+        )
         return {
-            "running":True,"shift_code":shift_code,"tick":tick_no,
-            "orders":int(counts["total"] or 0),"moving":int(counts["moving"] or 0),
-            "ready":int(counts["ready"] or 0),"issued":int(counts["issued"] or 0),
-            "estimated_cost":float(counts["costs"] or 0)
+            "running": True, "shift_code": shift_code, "tick": tick_no,
+            "orders": int(counts["total"] or 0),
+            "moving": int(counts["moving"] or 0),
+            "ready": int(counts["ready"] or 0),
+            "issued": int(counts["issued"] or 0),
+            "estimated_cost": float(counts["costs"] or 0),
         }
+
 
 
 def _simulation_destination_index(tick_no, destination_count, batch_target_orders, order_interval_ticks=2):
@@ -1615,14 +1705,14 @@ def simulation_vehicles_df():
             LEFT JOIN pickup_points dst ON dst.id=o.destination_point_id
             LEFT JOIN simulation_vehicle_progress v ON v.order_id=o.id
             WHERE o.status='В пути' AND o.order_code LIKE ?
-            ORDER BY o.id DESC LIMIT 200""",c,params=(f"{code}-%",))
+            ORDER BY o.id DESC LIMIT 80""",c,params=(f"{code}-%",))
         supplies=pd.read_sql_query("""SELECT id,reference AS Заказ,transport_type AS Маршрут,
             status AS Статус,0.0 AS 'Затраты, ₽',from_name AS Источник,to_name AS Назначение,
             '' AS Город_источника,'' AS Город_назначения,progress AS Прогресс,
             'Supply' AS Тип_источника,from_lat AS source_lat,from_lon AS source_lon,
             to_lat AS dest_lat,to_lon AS dest_lon
             FROM simulation_supply_transports WHERE status='В пути' AND shift_code=?
-            ORDER BY id DESC LIMIT 100""",c,params=(code,))
+            ORDER BY id DESC LIMIT 40""",c,params=(code,))
         return pd.concat([orders,supplies],ignore_index=True)
 
 
