@@ -1262,6 +1262,8 @@ def start_continuous_simulation():
         c.execute("""UPDATE simulation_control SET running=1,shift_code=?,tick_no=0,
             started_at=CURRENT_TIMESTAMP,stopped_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=1""",(code,))
         c.execute("INSERT INTO simulation_events(shift_code,tick_no,event_type,message) VALUES(?,0,'Смена','Запущена непрерывная диспетчерская смена')",(code,))
+        c.execute("""INSERT INTO operational_runs(run_code,notes)
+            VALUES(?,?)""",(code,"Непрерывная диспетчерская смена; статистика обновляется по тактам."))
     return code
 
 
@@ -1426,6 +1428,14 @@ def continuous_simulation_tick():
             SUM(CASE WHEN status='Выдан' THEN 1 ELSE 0 END) AS issued,
             COALESCE(SUM(estimated_cost),0) AS costs
             FROM orders WHERE order_code LIKE ?""",(f"{shift_code}-%",)).fetchone()
+        incidents_total=c.execute("SELECT COUNT(*) AS n FROM incidents WHERE order_id IN (SELECT id FROM orders WHERE order_code LIKE ?)",(f"{shift_code}-%",)).fetchone()["n"]
+        c.execute("""UPDATE operational_runs SET created_orders=?,failed_orders=?,
+            dispatched_orders=?,ready_orders=?,issued_orders=?,incidents_created=?,estimated_cost=?
+            WHERE run_code=?""",
+            (int(counts["total"] or 0),0,
+             int(counts["moving"] or 0)+int(counts["ready"] or 0)+int(counts["issued"] or 0),
+             int(counts["ready"] or 0),int(counts["issued"] or 0),int(incidents_total),
+             float(counts["costs"] or 0),shift_code))
         return {
             "running":True,"shift_code":shift_code,"tick":tick_no,
             "orders":int(counts["total"] or 0),"moving":int(counts["moving"] or 0),
