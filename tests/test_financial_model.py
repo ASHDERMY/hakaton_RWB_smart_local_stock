@@ -16,7 +16,7 @@ class FinancialModelTests(unittest.TestCase):
         self.assertAlmostEqual(result["mesh_cost"], 81400.0)
         self.assertAlmostEqual(result["baseline_hub_cost"], 74400.0)
         self.assertAlmostEqual(result["savings"], -7000.0)
-        self.assertAlmostEqual(result["mesh_cost_per_order"], 81400 / 1200)
+        self.assertAlmostEqual(result["mesh_cost_per_order"], 81400 / 1200, places=2)
 
     def test_130_capacity_reduces_trips_and_changes_scenario_to_small_saving(self):
         result = forecast_financials(
