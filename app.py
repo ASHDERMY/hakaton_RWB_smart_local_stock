@@ -294,8 +294,9 @@ elif page=="Карта логистики":
         elif demand.empty:
             st.info("Нет заказов Mesh, ожидающих отправки из этого Anchor. Для расчёта нужны заказы со статусом «Ожидает партии».")
         else:
+            anchor_data = {"lat": float(anchor_row["Широта"]), "lon": float(anchor_row["Долгота"])}
             plan = plan_multi_stop_routes(
-                anchor={"lat": float(anchor_row["Широта"]), "lon": float(anchor_row["Долгота"])},
+                anchor=anchor_data,
                 stops=demand.to_dict("records"),
                 max_orders=int(route_settings["max_orders"]),
                 max_volume_l=float(route_settings["max_volume_l"]),
