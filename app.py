@@ -60,15 +60,30 @@ if page=="Оперативный центр":
     with st.container(border=True):
         st.markdown("#### Запуск повседневной смены (симуляция)")
         st.write("Кнопка создаёт поток тестовых заказов на основе реальных остатков, запускает правила выбора Mesh/Hub, обрабатывает партии и проводит часть отправлений до ПВЗ и выдачи. Результаты сохраняются в базе и появляются в этом центре.")
-        with st.form("daily_operations_form"):
-            sim_col1, sim_col2 = st.columns([1, 1])
-            with sim_col1:
-                shift_orders = st.number_input("Заказов в смене", min_value=1, max_value=500, value=40, step=5)
-            with sim_col2:
-                simulate_incident = st.checkbox("Добавить дорожный инцидент для проверки диспетчера", value=False)
-            start_shift = st.form_submit_button("▶ Запустить повседневную работу", type="primary", use_container_width=True)
-        if start_shift:
-            result = show_error(lambda: run_daily_operations(int(shift_orders), simulate_incident))
+        active_destinations = points_df()
+        active_destinations = active_destinations[
+            (active_destinations["Тип"] == "Обычный") & (active_destinations["Активен"] == 1)
+        ] if not active_destinations.empty else active_destinations
+        if active_destinations.empty:
+            st.warning("Добавьте хотя бы один активный обычный ПВЗ, чтобы запустить смену.")
+        else:
+            with st.form("daily_operations_form"):
+                sim_col1, sim_col2 = st.columns([1, 1])
+                with sim_col1:
+                    shift_orders = st.number_input("Заказов в смене", min_value=1, max_value=500, value=80, step=5)
+                    destination_map = dict(zip(
+                        active_destinations["Название"] + " · " + active_destinations["Город"],
+                        active_destinations["id"]
+                    ))
+                    shift_destination = st.selectbox("ПВЗ, на который направляем поток", list(destination_map))
+                with sim_col2:
+                    simulate_incident = st.checkbox("Добавить дорожный инцидент для проверки диспетчера", value=False)
+                    st.caption("Поток одной демонстрационной смены концентрируется на выбранном ПВЗ, чтобы было видно накопление и решение по партии Mesh.")
+                start_shift = st.form_submit_button("▶ Запустить повседневную работу", type="primary", use_container_width=True)
+            if start_shift:
+                result = show_error(lambda: run_daily_operations(
+                    int(shift_orders), simulate_incident, int(destination_map[shift_destination])
+                ))
             if result:
                 st.success(f"Смена {result['run_code']} завершена: создано {result['created_orders']} заказов, отправлено {result['dispatched_orders']}, прибыло в ПВЗ {result['ready_orders']}, выдано {result['issued_orders']}.")
                 st.write(f"Не создано из-за ограничений остатков: {result['failed_orders']}. Инцидентов: {result['incidents_created']}. Расчётные затраты: {result['estimated_cost']:,.2f} ₽.")
