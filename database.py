@@ -307,6 +307,10 @@ def _close_batch(c, batch_id, settings, force=False):
         hub = c.execute("SELECT * FROM pickup_points WHERE point_type='Hub' AND active=1 ORDER BY id LIMIT 1").fetchone()
         if not hub:
             reason = "Нет активной точки Hub для резервного маршрута."
+            if batch["status"] != "blocked_hub_stock":
+                first_order_id = orders[0]["id"] if orders else None
+                c.execute("INSERT INTO incidents(order_id,category,description) VALUES(?,?,?)",
+                          (first_order_id, "Невозможен перевод на Hub", reason))
             c.execute("UPDATE mesh_batches SET status='blocked_hub_stock',decision_reason=? WHERE id=?", (reason, batch_id))
             return {"decision": "blocked_hub_stock", "reason": reason}
 
@@ -322,6 +326,10 @@ def _close_batch(c, batch_id, settings, force=False):
                     "Партия достигла условия закрытия, но в Hub недостаточно запаса "
                     "для переноса всех заказов. Пополните Hub и повторите обработку."
                 )
+                if batch["status"] != "blocked_hub_stock":
+                    first_order_id = orders[0]["id"] if orders else None
+                    c.execute("INSERT INTO incidents(order_id,category,description) VALUES(?,?,?)",
+                              (first_order_id, "Недостаток запаса Hub", reason))
                 c.execute("UPDATE mesh_batches SET status='blocked_hub_stock',decision_reason=? WHERE id=?", (reason, batch_id))
                 return {"decision": "blocked_hub_stock", "reason": reason}
 
@@ -529,6 +537,13 @@ def update_order_status(order_id, new_status):
                  order["order_code"], "Выдача покупателю"))
 
         c.execute("UPDATE orders SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (new_status, order_id))
+        if new_status == "Готов к выдаче" and order["batch_id"]:
+            unfinished = c.execute("""SELECT COUNT(*) AS n FROM orders
+                WHERE batch_id=? AND status NOT IN ('Готов к выдаче','Выдан','Возврат оформлен','Отменён')""",
+                (order["batch_id"],)).fetchone()["n"]
+            if unfinished == 0:
+                c.execute("UPDATE mesh_batches SET status='completed',closed_at=CURRENT_TIMESTAMP WHERE id=?",
+                          (order["batch_id"],))
         if new_status == "Отменён" and order["batch_id"]:
             remaining = c.execute("SELECT COUNT(*) AS n FROM orders WHERE batch_id=? AND status='Ожидает партии'",
                                   (order["batch_id"],)).fetchone()["n"]
