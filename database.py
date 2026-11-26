@@ -1034,7 +1034,6 @@ def run_daily_operations(order_limit=80, simulate_incident=False, destination_po
     stock = stock[stock["ПВЗ"] == chosen_anchor["Название"]]
     if stock.empty:
         raise ValueError(f"На Anchor «{chosen_anchor['Название']}» нет доступного запаса.")
-    stock = stock.merge(products[["id", "SKU", "Объём, л"]], on="SKU", how="inner")
     destination_ids = destinations["id"].astype(int).tolist()
     destination_id = destination_ids[0]
     prefix = "SHIFT-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4].upper()
