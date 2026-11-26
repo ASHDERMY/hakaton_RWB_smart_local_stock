@@ -59,6 +59,17 @@ class FinancialModelTests(unittest.TestCase):
         )
         self.assertAlmostEqual(fee, -8.3333333333, places=6)
 
+    def test_zero_mesh_share_still_pays_fixed_cost_when_solution_is_deployed(self):
+        result = forecast_financials(
+            monthly_orders=1200, mesh_share_pct=0, anchors=3, batch_orders=80,
+            trip_cost=2400, hub_cost_per_order=62, monthly_system_cost=10000,
+            months=1,
+        )["monthly"]
+        self.assertEqual(result["mesh_orders"], 0)
+        self.assertEqual(result["trips"], 0)
+        self.assertAlmostEqual(result["system_cost"], 10000.0)
+        self.assertAlmostEqual(result["savings"], -10000.0)
+
     def test_forecast_reports_negative_roi_and_npv_when_full_costs_exceed_hub(self):
         result = forecast_financials(
             monthly_orders=1200, mesh_share_pct=100, anchors=3, batch_orders=80,
