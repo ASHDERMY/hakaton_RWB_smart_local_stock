@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+from map_view import render_logistics_map
 from database import (
     init_db, seed_demo, products_df, inventory_df, points_df, orders_df,
     settings_dict, save_setting, add_product, receive_stock, create_order,
@@ -28,7 +29,7 @@ st.title("📦 Smart Local Stock")
 st.caption("Система локального хранения, учёта заказов и выбора маршрута Hub / Mesh")
 with st.sidebar:
     page=st.radio("Рабочие разделы",[
-        "Панель управления","Товары и ПВЗ","Склад и приёмка","Заказы","Партии Mesh","Возвраты",
+        "Панель управления","Карта логистики","Товары и ПВЗ","Склад и приёмка","Заказы","Партии Mesh","Возвраты",
         "Инциденты","Финансы","Настройки модели","Журнал операций"
     ])
     st.divider()
@@ -52,6 +53,9 @@ if page=="Панель управления":
     if od.empty: st.info("Заказов пока нет.")
     else: st.dataframe(od.head(10),use_container_width=True,hide_index=True)
     st.info("Mesh используется только при наличии запаса в Anchor, соблюдении ограничений и меньшей расчётной стоимости. В остальных случаях система выбирает Hub.")
+
+elif page=="Карта логистики":
+    render_logistics_map(orders_df())
 
 elif page=="Товары и ПВЗ":
     left,right=st.columns([1,1])
