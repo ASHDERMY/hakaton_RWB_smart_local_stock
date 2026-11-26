@@ -813,7 +813,9 @@ elif page=="Финансы":
         daily_history = mature_history_daily_df()
         if not daily_history.empty:
             st.line_chart(daily_history.set_index("День")[["Накопленный эффект, ₽"]])
-        st.caption("Синтетическая история 150 дней: 6 000 заказов при темпе 40/день. В ней фиксированные расходы системы учтены отдельно от стоимости заказов.")
+            with st.expander("Показать расчёты каждого из 150 дней"):
+                st.dataframe(daily_history,use_container_width=True,hide_index=True,height=360)
+        st.caption("Синтетическая история 150 дней. Количество заказов в день берётся из прогноза месячного спроса в настройках. Фиксированные расходы системы учтены отдельно от стоимости заказов.")
 
     with st.expander("Параметры финансового прогноза", expanded=True):
         x1, x2, x3 = st.columns(3)
