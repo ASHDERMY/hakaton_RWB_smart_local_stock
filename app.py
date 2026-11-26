@@ -827,7 +827,7 @@ elif page=="Финансы":
     k3.metric("База: всё через Hub", f'{current.get("baseline_hub_cost", 0):,.0f} ₽')
     k4.metric("Эффект за месяц", f'{current.get("savings", 0):+,.0f} ₽',
               delta="экономия" if current.get("savings", 0) >= 0 else "убыток",
-              delta_color="normal" if current.get("savings", 0) >= 0 else "inverse')
+              delta_color="normal" if current.get("savings", 0) >= 0 else "inverse")
     if current.get("savings", 0) < 0:
         st.error("При выбранных условиях Mesh увеличивает затраты маркетплейса. Не отправляйте такую партию по Mesh: оставляйте её на Hub или меняйте загрузку/тарифы.")
     else:
