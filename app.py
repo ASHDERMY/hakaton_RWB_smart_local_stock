@@ -8,7 +8,7 @@ from database import (
     update_order_status, create_return, process_return, returns_df,
     movements_df, incidents_df, add_incident, finance_summary,
     mesh_batches_df, process_mesh_batches, sellers_df, supplier_deliveries_df,
-    create_seller, create_supplier_delivery, receive_supplier_delivery
+    create_seller, create_supplier_delivery, receive_supplier_delivery, add_pickup_point
 )
 
 st.set_page_config(page_title="Smart Local Stock", page_icon="📦", layout="wide")
@@ -80,7 +80,15 @@ elif page=="Товары и ПВЗ":
     with right:
         st.markdown("#### Точки сети")
         st.dataframe(points_df(),use_container_width=True,hide_index=True)
-        st.caption("В текущей версии типы Anchor, обычный ПВЗ и Hub используются в логике маршрутизации. Управление точками и географией расширим следующим этапом.")
+        st.caption("Активные Anchor используются для размещения локального запаса; Hub — для поставок продавца и резервного маршрута.")
+        with st.expander("Добавить точку сети"):
+            with st.form("new_pickup_point_form"):
+                new_point_name=st.text_input("Название точки")
+                new_point_city=st.text_input("Город")
+                new_point_type=st.selectbox("Тип точки",["Anchor","Обычный","Hub"])
+                point_submit=st.form_submit_button("Добавить активную точку")
+                if point_submit:
+                    show_error(lambda:add_pickup_point(new_point_name,new_point_type,new_point_city))
 
 elif page=="Склад и приёмка":
     st.subheader("Остатки и операции приёмки")
