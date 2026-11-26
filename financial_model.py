@@ -84,9 +84,11 @@ def forecast_financials(
             mesh_total = mesh["total_cost"] + float(monthly_system_cost) * (1.0 - share)
             system_total = float(monthly_system_cost)
         else:
+            # The platform still pays the fixed system cost when the method is deployed,
+            # even if the current demand mix sends every order through Hub.
             trips = 0
             mesh_total = 0.0
-            system_total = 0.0
+            system_total = float(monthly_system_cost)
             mesh = {"total_per_order": 0.0}
         hub_total = hub_orders * float(hub_cost_per_order)
         baseline = demand * float(hub_cost_per_order)
