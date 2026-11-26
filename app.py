@@ -802,6 +802,7 @@ elif page=="Экономика участников":
 elif page=="Финансы":
     st.subheader("Финансы и прогноз экономики Mesh")
     st.caption("Сравниваем одну и ту же клиентскую нагрузку: базовый маршрут через Hub против гибридной схемы Mesh + Hub. Все тарифы ниже — изменяемые гипотезы, не внутренние данные RWB.")
+    forecast_cfg = settings_values()
     history = mature_history_summary()
     if history:
         st.markdown("#### Накопленный результат сценария на 150-й день")
@@ -820,22 +821,22 @@ elif page=="Финансы":
     with st.expander("Параметры финансового прогноза", expanded=True):
         x1, x2, x3 = st.columns(3)
         with x1:
-            monthly_orders = st.number_input("Заказов в месяц", min_value=1, value=1200, step=100, key="forecast_orders")
+            monthly_orders = st.number_input("Заказов в месяц", min_value=1, value=int(forecast_cfg["monthly_orders_forecast"]), step=100, key="forecast_orders")
             anchors = st.number_input("Количество Anchor", min_value=1, value=3, step=1, key="forecast_anchors")
             mesh_share = st.slider("Доля заказов Mesh, %", 0, 100, 100, key="forecast_mesh_share")
         with x2:
-            batch_orders = st.number_input("Заказов в одном рейсе", min_value=1, max_value=130, value=80, step=5, key="forecast_batch")
-            trip_cost = st.number_input("Стоимость локального рейса, ₽", min_value=0.0, value=2400.0, step=100.0, key="forecast_trip")
-            hub_cost = st.number_input("Сравнительная стоимость Hub, ₽/заказ", min_value=0.0, value=62.0, step=1.0, key="forecast_hub")
+            batch_orders = st.number_input("Заказов в одном рейсе", min_value=1, max_value=130, value=min(int(forecast_cfg["batch_target_orders"]), int(forecast_cfg["max_orders"])), step=5, key="forecast_batch")
+            trip_cost = st.number_input("Стоимость локального рейса, ₽", min_value=0.0, value=float(forecast_cfg["local_trip_cost"]), step=100.0, key="forecast_trip")
+            hub_cost = st.number_input("Сравнительная стоимость Hub, ₽/заказ", min_value=0.0, value=float(forecast_cfg["hub_cost_per_order"]), step=1.0, key="forecast_hub")
         with x3:
-            variable = st.number_input("Переменные расходы Mesh, ₽/заказ", min_value=0.0, value=14.5, step=0.5, key="forecast_variable")
-            anchor_fee = st.number_input("Доплата Anchor за хранение и операции, ₽/заказ", min_value=0.0, value=3.5, step=0.5, key="forecast_anchor_fee")
-            monthly_system = st.number_input("Система и сопровождение, ₽/месяц", min_value=0.0, value=10000.0, step=1000.0, key="forecast_system")
+            variable = st.number_input("Переменные расходы Mesh, ₽/заказ", min_value=0.0, value=float(forecast_cfg["mesh_variable_cost"]), step=0.5, key="forecast_variable")
+            anchor_fee = st.number_input("Доплата Anchor за хранение и операции, ₽/заказ", min_value=0.0, value=float(forecast_cfg["anchor_fee_per_order"]), step=0.5, key="forecast_anchor_fee")
+            monthly_system = st.number_input("Система и сопровождение, ₽/месяц", min_value=0.0, value=float(forecast_cfg["monthly_system_cost"]), step=1000.0, key="forecast_system")
         y1, y2, y3 = st.columns(3)
         with y1:
-            replenishment = st.number_input("Пополнение Anchor, ₽/заказ", min_value=0.0, value=9.0, step=0.5, key="forecast_replenishment")
+            replenishment = st.number_input("Пополнение Anchor, ₽/заказ", min_value=0.0, value=float(forecast_cfg["replenishment_per_order"]), step=0.5, key="forecast_replenishment")
         with y2:
-            storage = st.number_input("Хранение, ₽/заказ", min_value=0.0, value=2.5, step=0.5, key="forecast_storage")
+            storage = st.number_input("Хранение, ₽/заказ", min_value=0.0, value=float(forecast_cfg["storage_per_order"]), step=0.5, key="forecast_storage")
         with y3:
             handling = st.number_input("Дополнительная обработка и риск, ₽/заказ", min_value=0.0, value=0.0, step=0.5, key="forecast_handling")
         z1, z2, z3 = st.columns(3)
@@ -849,7 +850,7 @@ elif page=="Финансы":
 
     forecast = forecast_financials(
         monthly_orders=monthly_orders, mesh_share_pct=mesh_share, anchors=anchors,
-        batch_orders=batch_orders, max_orders=130, avg_order_volume_l=4.0, max_volume_l=1500,
+        batch_orders=batch_orders, max_orders=int(forecast_cfg["max_orders"]), avg_order_volume_l=4.0, max_volume_l=float(forecast_cfg["max_volume_l"]),
         trip_cost=trip_cost, hub_cost_per_order=hub_cost, variable_cost=variable,
         anchor_fee=anchor_fee, replenishment_per_order=replenishment,
         storage_per_order=storage, handling_per_order=handling,
@@ -876,7 +877,7 @@ elif page=="Финансы":
 
     max_fee = break_even_anchor_fee(
         orders_per_month=monthly_orders, anchors=anchors, batch_orders=batch_orders,
-        max_orders=130, avg_order_volume_l=4.0, max_volume_l=1500,
+        max_orders=int(forecast_cfg["max_orders"]), avg_order_volume_l=4.0, max_volume_l=float(forecast_cfg["max_volume_l"]),
         trip_cost=trip_cost, hub_cost_per_order=hub_cost, variable_cost=variable,
         replenishment_per_order=replenishment, storage_per_order=storage,
         handling_per_order=handling, return_rate_pct=return_rate, return_cost=return_cost,
