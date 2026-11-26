@@ -224,7 +224,8 @@ elif page=="Настройки модели":
     for key,label in labels.items():
         item=raw[key]
         st.write(f"**{label}** · {item['classification']} · {item['note']}")
-        val=st.number_input(label,min_value=0.0,value=float(item["value"]),key="setting_"+key)
+        minimum = 1.0 if key in {"batch_target_orders","max_orders","max_volume_l","max_wait_hours","hub_cost_per_order"} else 0.0
+        val=st.number_input(label,min_value=minimum,value=float(item["value"]),key="setting_"+key)
         if st.button("Сохранить: "+label,key="save_"+key):
             save_setting(key,val); st.success("Сохранено. Новые заказы будут использовать это значение.")
     st.caption("Изменение параметров не пересчитывает исторические заказы: их оценка сохраняется на момент создания.")
