@@ -1446,9 +1446,9 @@ def prepare_mature_simulation():
                                created_at, hub_id, hub_tariff, created_at, None))
             daily_orders.append(code)
             movement_rows.extend([
-                (hub_id, product_id, "dispatch", 1, code, "Историческая модель: отправка Hub → ПВЗ"),
-                (destination_id, product_id, "arrival", 1, code, "Историческая модель: прибытие в ПВЗ"),
-                (destination_id, product_id, "issue", 1, code, "Историческая модель: выдача покупателю"),
+                (hub_id, product_id, "dispatch", 1, code, "Историческая модель: отправка Hub → ПВЗ", created_at),
+                (destination_id, product_id, "arrival", 1, code, "Историческая модель: прибытие в ПВЗ", created_at),
+                (destination_id, product_id, "issue", 1, code, "Историческая модель: выдача покупателю", created_at),
             ])
 
         daily_baseline = orders_per_day * hub_tariff
@@ -1522,8 +1522,7 @@ def prepare_mature_simulation():
         c.executemany(
             """INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note,created_at)
             VALUES(?,?,?,?,?,?,?)""",
-            [(pid, sku, kind, qty, ref, note, ref.split("-")[1] if False else start_date.strftime("%Y-%m-%d %H:%M:%S"))
-             for pid, sku, kind, qty, ref, note in movement_rows],
+            movement_rows,
         )
         c.executemany(
             """INSERT INTO simulation_history_days(
@@ -1578,10 +1577,13 @@ def start_continuous_simulation(start_day=1):
     with db() as c:
         c.execute("""UPDATE simulation_control SET running=1,shift_code=?,tick_no=0,start_day=?,
             started_at=CURRENT_TIMESTAMP,stopped_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=1""",(code,start_day))
-        message = ("Запущена симуляция с 150-го дня: сформирована стартовая конфигурация зрелой сети "
-                   f"(товаров: {baseline['products']}, Anchor: {baseline['anchors']}, Hub: {baseline['hubs']}, "
-                   f"добавлено стартовых единиц: {baseline['opening_units']})."
-                   if baseline else "Запущена симуляция с 1-го дня внедрения Smart Local Stock.")
+        message = (
+            f"Запуск с 150-го дня: в историю загружено {baseline['orders_count']} модельных заказов "
+            f"за {baseline['day_count']} дней; Mesh: {baseline['mesh_orders']}, Hub: {baseline['hub_orders']}; "
+            f"расчётные затраты с системой: {baseline['total_cost']:.2f} ₽; эффект к базовому Hub: "
+            f"{baseline['net_effect']:.2f} ₽. История синтетическая, не реальные заказы RWB."
+            if baseline else "Запущена симуляция с 1-го дня внедрения Smart Local Stock."
+        )
         c.execute("INSERT INTO simulation_events(shift_code,tick_no,event_type,message) VALUES(?,0,'Смена',?)",(code,message))
         c.execute("""INSERT INTO operational_runs(run_code,notes)
             VALUES(?,?)""",(code,message))
