@@ -40,9 +40,9 @@ def evaluate_batch(
 ):
     """
     Decide whether a real accumulated Anchor -> ordinary pickup point batch
-    should wait, travel by Mesh, or fall back to Hub.
+    should wait, travel by Mesh, or fall back to Hub using full incremental costs.
 
-    The trip cost is allocated across customer orders, not item units.
+    The fixed trip and all incremental per-order costs are compared with the Hub baseline.
     """
     if order_count <= 0:
         return {"decision": "empty", "reason": "В партии нет активных заказов."}
@@ -75,14 +75,14 @@ def evaluate_batch(
         )
         return {
             "decision": "mesh",
-            "reason": f"{trigger} Расчётные транспортные затраты Mesh ниже Hub.",
+            "reason": f"{trigger} Полная расчётная стоимость Mesh ниже Hub.",
             "mesh_cost_per_order": mesh_cost_per_order,
         }
 
     return {
         "decision": "hub",
         "reason": (
-            "После достижения условия отправки Mesh не дешевле Hub "
+            "После достижения условия отправки полная стоимость Mesh не ниже Hub "
             f"({mesh_cost_per_order:.2f} ₽ против {hub_cost_per_order:.2f} ₽ на заказ)."
         ),
         "mesh_cost_per_order": mesh_cost_per_order,
