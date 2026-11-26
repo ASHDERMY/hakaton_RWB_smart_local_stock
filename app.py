@@ -72,31 +72,30 @@ if page=="Оперативный центр":
 
     with st.container(border=True):
         st.markdown("#### Непрерывная диспетчерская смена")
-        st.caption("Смена работает, пока открыт раздел и не нажата кнопка «Стоп». Один такт каждые 2 секунды. Заказы, поставки, транспорт, возвраты и инциденты записываются в SQLite.")
+        st.caption("Смена работает, пока открыт раздел и не нажата кнопка «Стоп». Такт обновляется каждые 2 секунды; новый заказ моделируется раз в 4 секунды. Данные записываются в SQLite.")
         sim_state, _ = simulation_state()
-        state_col, start_col, stop_col = st.columns([2,1,1])
-        state_col.metric("Состояние смены", "РАБОТАЕТ" if sim_state["running"] else "ОСТАНОВЛЕНА",
-                         f"Такт {sim_state['tick_no']} · {sim_state['shift_code'] or 'нет активной смены'}")
-        if start_col.button("▶ Старт", type="primary", disabled=bool(sim_state["running"]), use_container_width=True):
-            start_continuous_simulation()
-            st.rerun()
-        if stop_col.button("■ Стоп", type="secondary", disabled=not bool(sim_state["running"]), use_container_width=True):
-            stop_continuous_simulation()
-            st.rerun()
 
     @st.fragment(run_every="2s" if sim_state["running"] else None)
     def live_dispatch_fragment():
         current, _ = simulation_state()
-        current, _ = simulation_state()
-        snap_live = operational_snapshot()
-        live_status = snap_live["status_counts"]
+        state_col, start_col, stop_col = st.columns([2,1,1])
+        state_col.metric("Состояние смены", "РАБОТАЕТ" if current["running"] else "ОСТАНОВЛЕНА",
+                         f"Такт {current['tick_no']} · {current['shift_code'] or 'нет активной смены'}")
+        if start_col.button("▶ Старт", type="primary", disabled=bool(current["running"]), use_container_width=True):
+            start_continuous_simulation()
+            st.rerun()
+        if stop_col.button("■ Стоп", type="secondary", disabled=not bool(current["running"]), use_container_width=True):
+            stop_continuous_simulation()
+            st.rerun()
+
+        shift = simulation_shift_snapshot()
+        live_status = shift["status_counts"]
         a,b,c,d = st.columns(4)
-        a.metric("Такт", current["tick_no"])
-        a2 = current.get("shift_code") or "—"
+        a.metric("Заказы текущей смены", shift["total_orders"])
         b.metric("В пути", live_status.get("В пути",0))
         c.metric("Ожидают выдачи", live_status.get("Готов к выдаче",0))
         d.metric("Выдано", live_status.get("Выдан",0))
-        st.caption(f"Смена: {a2} · Автообновление каждые 2 секунды")
+        st.caption(f"Смена: {current.get('shift_code') or '—'} · Автообновление каждые 2 секунды · Показатели ниже относятся только к этой смене")
         timeline = simulation_timeline_df(30)
         st.markdown("##### Хронология событий")
         if timeline.empty:
@@ -106,7 +105,7 @@ if page=="Оперативный центр":
         vehicles = simulation_vehicles_df()
         st.markdown("##### Карта активных перевозок")
         if vehicles.empty:
-            st.info("Сейчас нет заказов в пути. Новые рейсы появятся по мере формирования потока.")
+            st.info(f"В текущей смене нет транспорта в пути. Mesh ожидают партии: {shift['mesh_waiting_orders']} заказов; заблокировано из-за остатка Hub: {shift['mesh_blocked_orders']}.")
         else:
             from map_view import render_live_dispatch_map
             render_live_dispatch_map(vehicles)
@@ -114,24 +113,26 @@ if page=="Оперативный центр":
         st.markdown("##### Экономика текущей смены")
         f1,f2,f3,f4 = st.columns(4)
         f1.metric("Заказы Mesh / Hub", f"{fin_live['mesh_orders']} / {fin_live['hub_orders']}")
-        f2.metric("Рейсы Mesh", fin_live["mesh_trips"])
+        f2.metric("Отправленные рейсы Mesh", fin_live["mesh_trips"])
         f3.metric("Расчётные затраты", f"{fin_live['transport_total']:,.2f} ₽")
         f4.metric("Эффект к сценарию 100% Hub", f"{fin_live['savings']:+,.2f} ₽",
                   delta="экономия" if fin_live["savings"]>=0 else "дороже",
                   delta_color="normal" if fin_live["savings"]>=0 else "inverse")
+        st.caption(f"Mesh: ожидают партии — {fin_live['mesh_waiting_orders']}; в пути — {fin_live['mesh_in_transit_orders']}; готовы к выдаче — {fin_live['mesh_ready_orders']}; заблокированы — {fin_live['mesh_blocked_orders']}. Ожидающих партий: {fin_live['mesh_waiting_batches']}; заблокированных партий: {fin_live['mesh_blocked_batches']}.")
         with st.expander("Расшифровка финансовых формул"):
-            st.write(f"Рейсы Mesh: {fin_live['mesh_trip_cost']:,.2f} ₽")
+            st.write(f"Рейсы Mesh (отправленные и завершённые): {fin_live['mesh_trip_cost']:,.2f} ₽")
             st.write(f"Переменные расходы Mesh: {fin_live['mesh_variable_cost']:,.2f} ₽")
-            st.write(f"Маршрут Hub: {fin_live['hub_cost']:,.2f} ₽")
+            st.write(f"Маршрут Hub и заблокированные Mesh-партии (консервативная оценка): {fin_live['hub_cost']:,.2f} ₽")
             st.write(f"Сравнительная база 100% Hub: {fin_live['hub_baseline']:,.2f} ₽")
             st.write(f"Возвраты в смене: {fin_live['returns']}")
-            st.code("C_Mesh = C_trip / N_batch + C_variable\nC_total = N_mesh × C_Mesh + N_hub × C_Hub\nSaving = N_total × C_Hub - C_total",language="text")
-        st.caption("Это транспортная экономика смены, а не полная прибыль/P&L. Хранение, закупочная стоимость, труд, компенсации и возвратная логистика учитываются только после задания подтверждённых параметров. Тарифы модели — гипотезы, не фактические данные RWB.")
+            st.code("C_total = C_dispatched_trips + C_waiting_batch_estimates + C_Mesh_variable + C_Hub_reference\nSaving = N_all_orders × C_Hub_reference - C_total",language="text")
+        st.caption("Это транспортная экономика текущей смены, а не полная прибыль/P&L. Ожидающие партии учитываются по гипотетической стоимости рейса; заблокированные партии консервативно оцениваются по тарифу Hub. Хранение, закупочная стоимость, труд, компенсации и возвратная логистика не включены. Тарифы — гипотезы, не фактические данные RWB.")
         if current["running"]:
             st.info("Смена активна. Нажми «Стоп» выше, чтобы завершить её.")
     live_dispatch_fragment()
 
-    st.markdown("#### Состояние сети сейчас")
+
+    st.markdown("#### Состояние сети (вся база SQLite)")
     alerts = []
     if batches["blocked_batches"]:
         alerts.append(f"Заблокировано партий из-за остатка Hub: {batches['blocked_batches']}")
@@ -167,9 +168,9 @@ if page=="Оперативный центр":
     with chart_col:
         st.bar_chart(status_frame.set_index("Статус"), use_container_width=True)
     with finance_col:
-        st.markdown("#### Финансовая картина")
+        st.markdown("#### Финансовая картина по всей базе")
         fin = finance_summary()
-        st.metric("Расчётные логистические затраты", f"{fin['estimated_cost']:,.2f} ₽")
+        st.metric("Учтённые затраты по заказам (вся база)", f"{fin['estimated_cost']:,.2f} ₽")
         st.metric("Расходы, созданные сегодня", f"{today['cost_today']:,.2f} ₽")
         route_frame = pd.DataFrame([
             {"Маршрут": route, "Заказов": count}
@@ -177,7 +178,7 @@ if page=="Оперативный центр":
         ])
         if not route_frame.empty:
             st.dataframe(route_frame,use_container_width=True,hide_index=True)
-        st.caption("Затраты рассчитываются по параметрам модели. Это гипотезы, а не подтверждённая внутренняя себестоимость RWB.")
+        st.caption("Здесь суммируются записанные в orders поля estimated_cost по всей базе SQLite. Это не та же величина, что транспортная оценка текущей смены выше: здесь не добавляются прогнозные расходы ещё не отправленных Mesh-партий. Все тарифы — гипотезы, не подтверждённая внутренняя себестоимость RWB.")
 
     st.markdown("#### Что требует внимания диспетчера")
     alert_cols = st.columns(4)
