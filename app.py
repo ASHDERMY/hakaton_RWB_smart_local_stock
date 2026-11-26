@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from map_view import render_logistics_map
+from engine import replenishment_qty
 from database import (
     init_db, seed_demo, products_df, inventory_df, points_df, orders_df,
     settings_dict, save_setting, add_product, receive_stock, create_order,
@@ -11,6 +12,9 @@ from database import (
 
 st.set_page_config(page_title="Smart Local Stock", page_icon="📦", layout="wide")
 init_db()
+# Автоматическая проверка партий при каждом запуске/перерисовке Streamlit.
+# Это не фоновый планировщик: просроченная партия будет обработана при следующем обращении к приложению.
+process_mesh_batches()
 
 def settings_values():
     raw=settings_dict()
@@ -239,3 +243,33 @@ else:
     moves=movements_df()
     if moves.empty: st.info("Операций пока нет.")
     else: st.dataframe(moves,use_container_width=True,hide_index=True)
+    st.divider()
+    st.markdown("#### Автоматический расчёт потребности в пополнении Anchor")
+    st.caption("Введи средний спрос D, срок пополнения L и страховой запас SS. Это сценарный расчёт: D пока задаётся оператором, а не прогнозируется обученной ML-моделью.")
+    anchors = points[points["Тип"] == "Anchor"]
+    if not products.empty and not anchors.empty:
+        r1, r2 = st.columns(2)
+        pmap_r = dict(zip(products["Товар"] + " (" + products["SKU"] + ")", products["id"]))
+        amap_r = dict(zip(anchors["Название"], anchors["id"]))
+        with r1:
+            r_product = st.selectbox("SKU для расчёта", list(pmap_r), key="replenish_product")
+            r_anchor = st.selectbox("Опорный ПВЗ", list(amap_r), key="replenish_anchor")
+        with r2:
+            daily_demand = st.number_input("Средний спрос D, шт./день", min_value=0.0, value=5.0, step=0.5, key="replenish_d")
+            lead_days = st.number_input("Срок пополнения L, дней", min_value=0.0, value=2.0, step=0.5, key="replenish_l")
+            safety = st.number_input("Страховой запас SS, шт.", min_value=0, value=5, step=1, key="replenish_ss")
+        row = inventory[(inventory["SKU"] == products.loc[products["id"] == pmap_r[r_product], "SKU"].iloc[0]) &
+                         (inventory["ПВЗ"] == r_anchor)]
+        physical = int(row["Остаток"].iloc[0]) if not row.empty else 0
+        reserved = int(row["Резерв"].iloc[0]) if not row.empty else 0
+        incoming = int(row["В пути"].iloc[0]) if not row.empty else 0
+        available = physical + incoming - reserved
+        target = int(__import__("math").ceil(daily_demand * lead_days)) + int(safety)
+        need = replenishment_qty(physical, incoming, reserved, daily_demand, lead_days, int(safety))
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Доступный остаток", f"{available} шт.")
+        m2.metric("Целевой остаток", f"{target} шт.")
+        m3.metric("Рекомендация к пополнению", f"{need} шт.")
+        st.code("I_available = I + I_in - I_res\nI_target = ceil(D × L) + SS\nQ = max(0, I_target - I_available)", language="text")
+    else:
+        st.info("Для расчёта нужны товары и хотя бы одна точка Anchor.")
