@@ -67,6 +67,7 @@ if page=="Оперативный центр":
         if active_destinations.empty:
             st.warning("Добавьте хотя бы один активный обычный ПВЗ, чтобы запустить смену.")
         else:
+            result = None
             with st.form("daily_operations_form"):
                 sim_col1, sim_col2 = st.columns([1, 1])
                 with sim_col1:
