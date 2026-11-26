@@ -86,9 +86,12 @@ def render_logistics_map(orders: pd.DataFrame):
     b.metric("Статус", status)
     c.metric("Расчётные затраты", "—" if cost is None or pd.isna(cost) else f"{float(cost):,.2f} ₽")
 
-    if "Hub" in route or route == "Демонстрационный":
+    if route == "Демонстрационный":
         regional_path = [HUB, ANCHOR, dest]
-        route_label = "Hub → локальная сеть → ПВЗ" if route != "Демонстрационный" else "Пример региональной цепочки"
+        route_label = "Пример региональной цепочки"
+    elif "Hub" in route:
+        regional_path = [HUB, dest]
+        route_label = "СЦ WB → ПВЗ (резервный маршрут модели)"
     else:
         regional_path = [ANCHOR, dest]
         route_label = "Anchor → ПВЗ (Mesh)"
@@ -103,7 +106,7 @@ def render_logistics_map(orders: pd.DataFrame):
         st.write(f"**Источник:** {source['name']}  →  **Назначение:** {dest['name']}")
         st.caption("СЦ Казань (Зеленодольск): Республика Татарстан, Зеленодольск, промышленный парк Зеленодольск, 20. Адрес и координаты опубликованы в перечне сортировочных центров WB.")
     with tab_city:
-        local_path = [ANCHOR, dest]
+        local_path = [] if "Hub" in route and route != "Демонстрационный" else [ANCHOR, dest]
         deck = _deck(city_points, local_path, (56.632, 47.895), 11.1)
         st.pydeck_chart(deck, use_container_width=True)
         st.dataframe(pd.DataFrame([{"Объект": p["name"], "Адрес": p["address"], "Роль": p["kind"], "Координаты": "ориентировочно" if p["id"] != "anchor" else "проектная точка"} for p in [ANCHOR, *PVZ]]), use_container_width=True, hide_index=True)
