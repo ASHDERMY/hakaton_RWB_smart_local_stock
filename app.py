@@ -9,7 +9,7 @@ from database import (
     movements_df, incidents_df, add_incident, finance_summary,
     mesh_batches_df, process_mesh_batches, sellers_df, supplier_deliveries_df,
     create_seller, create_supplier_delivery, receive_supplier_delivery, add_pickup_point,
-    operational_snapshot, operational_runs_df, run_daily_operations, clear_temporary_simulation_data, simulation_state, start_continuous_simulation, stop_continuous_simulation, continuous_simulation_tick, simulation_timeline_df, simulation_vehicles_df
+    operational_snapshot, operational_runs_df, run_daily_operations, clear_temporary_simulation_data, simulation_state, start_continuous_simulation, stop_continuous_simulation, continuous_simulation_tick, simulation_timeline_df, simulation_vehicles_df, simulation_financials
 )
 
 st.set_page_config(page_title="Smart Local Stock", page_icon="📦", layout="wide")
@@ -103,9 +103,23 @@ if page=="Оперативный центр":
         else:
             from map_view import render_live_dispatch_map
             render_live_dispatch_map(vehicles)
-        fin_live = finance_summary()
-        st.metric("Накопленные расчётные логистические затраты", f"{fin_live['estimated_cost']:,.2f} ₽")
-        st.caption("Финансы используют текущие настройки модели: Mesh = стоимость рейса / число заказов партии + переменные расходы; Hub = ставка на заказ. Значения — гипотезы, не фактические тарифы RWB.")
+        fin_live = simulation_financials()
+        st.markdown("##### Экономика текущей смены")
+        f1,f2,f3,f4 = st.columns(4)
+        f1.metric("Заказы Mesh / Hub", f"{fin_live['mesh_orders']} / {fin_live['hub_orders']}")
+        f2.metric("Рейсы Mesh", fin_live["mesh_trips"])
+        f3.metric("Расчётные затраты", f"{fin_live['transport_total']:,.2f} ₽")
+        f4.metric("Эффект к сценарию 100% Hub", f"{fin_live['savings']:+,.2f} ₽",
+                  delta="экономия" if fin_live["savings"]>=0 else "дороже",
+                  delta_color="normal" if fin_live["savings"]>=0 else "inverse")
+        with st.expander("Расшифровка финансовых формул"):
+            st.write(f"Рейсы Mesh: {fin_live['mesh_trip_cost']:,.2f} ₽")
+            st.write(f"Переменные расходы Mesh: {fin_live['mesh_variable_cost']:,.2f} ₽")
+            st.write(f"Маршрут Hub: {fin_live['hub_cost']:,.2f} ₽")
+            st.write(f"Сравнительная база 100% Hub: {fin_live['hub_baseline']:,.2f} ₽")
+            st.write(f"Возвраты в смене: {fin_live['returns']}")
+            st.code("C_Mesh = C_trip / N_batch + C_variable\nC_total = N_mesh × C_Mesh + N_hub × C_Hub\nSaving = N_total × C_Hub - C_total",language="text")
+        st.caption("Это транспортная экономика смены, а не полная прибыль/P&L. Хранение, закупочная стоимость, труд, компенсации и возвратная логистика учитываются только после задания подтверждённых параметров. Тарифы модели — гипотезы, не фактические данные RWB.")
         if current["running"]:
             st.info("Смена активна. Нажми «Стоп» выше, чтобы завершить её.")
     live_dispatch_fragment()
