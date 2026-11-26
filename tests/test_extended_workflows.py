@@ -89,6 +89,9 @@ class ExtendedWorkflowTests(unittest.TestCase):
         self.assertTrue(tick["running"])
         self.assertEqual(tick["tick"], 1)
         self.assertGreaterEqual(len(database.simulation_timeline_df()), 2)
+        # First tick creates an inbound supplier vehicle which is visible on the live map.
+        self.assertGreaterEqual(len(database.simulation_vehicles_df()), 1)
+        self.assertIn('Продавец → Hub', database.simulation_vehicles_df()['Маршрут'].tolist())
         self.assertTrue(database.stop_continuous_simulation())
         state, _ = database.simulation_state()
         self.assertFalse(state["running"])
