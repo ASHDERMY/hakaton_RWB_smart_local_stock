@@ -1,0 +1,82 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+import database
+
+
+class ExtendedWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.original_db_path = database.DB_PATH
+        database.DB_PATH = Path(self.temp_dir.name) / "data" / "test_smart_local_stock.db"
+        database.init_db()
+        database.seed_demo()
+        self.settings = {key: float(item["value"]) for key, item in database.settings_dict().items()}
+
+    def tearDown(self):
+        database.DB_PATH = self.original_db_path
+        self.temp_dir.cleanup()
+
+    def test_can_add_anchor_and_receive_stock_to_selected_anchor(self):
+        anchor_id = database.add_pickup_point("Anchor Восток", "Anchor", "Демо-город")
+        database.receive_stock(anchor_id, 1, 7, "Тестовое размещение")
+        with database.db() as conn:
+            stock = conn.execute(
+                "SELECT quantity FROM inventory WHERE point_id=? AND product_id=1",
+                (anchor_id,)
+            ).fetchone()
+        self.assertEqual(stock["quantity"], 7)
+
+    def test_seller_delivery_is_received_into_hub_once(self):
+        with database.db() as conn:
+            seller_id = conn.execute(
+                "SELECT id FROM sellers WHERE name=?", ("ООО «ТехноПоставка»",)
+            ).fetchone()["id"]
+            hub_id = conn.execute(
+                "SELECT id FROM pickup_points WHERE point_type='Hub' AND active=1 ORDER BY id LIMIT 1"
+            ).fetchone()["id"]
+            before = conn.execute(
+                "SELECT quantity FROM inventory WHERE point_id=? AND product_id=1",
+                (hub_id,)
+            ).fetchone()["quantity"]
+
+        delivery_id = database.create_supplier_delivery(seller_id, 1, hub_id, 25, "SUP-TEST-001")
+        self.assertEqual(database.receive_supplier_delivery(delivery_id), 25)
+        with database.db() as conn:
+            after = conn.execute(
+                "SELECT quantity FROM inventory WHERE point_id=? AND product_id=1",
+                (hub_id,)
+            ).fetchone()["quantity"]
+        self.assertEqual(after, before + 25)
+        with self.assertRaises(ValueError):
+            database.receive_supplier_delivery(delivery_id)
+
+    def test_route_incident_creates_plan_and_changes_mesh_route_via_hub(self):
+        for number in range(1, 81):
+            database.create_order(
+                f"INCIDENT-{number:03d}", 1, 2, 1, self.settings
+            )
+        with database.db() as conn:
+            order_id = conn.execute(
+                "SELECT id FROM orders WHERE order_code='INCIDENT-001'"
+            ).fetchone()["id"]
+
+        result = database.add_incident(
+            order_id, "Перекрытие дороги",
+            "Дорога на прямом участке перекрыта из-за аварии."
+        )
+        self.assertTrue(result["applied"])
+        self.assertEqual(result["applied_route"], "Hub (обход)")
+        with database.db() as conn:
+            route = conn.execute(
+                "SELECT route,status FROM orders WHERE id=?", (order_id,)
+            ).fetchone()
+        self.assertEqual(route["route"], "Hub (обход)")
+        self.assertEqual(route["status"], "В пути")
+        incidents = database.incidents_df()
+        self.assertIn("через транзитный узел", incidents.iloc[0]["План действий"])
+
+
+if __name__ == "__main__":
+    unittest.main()
