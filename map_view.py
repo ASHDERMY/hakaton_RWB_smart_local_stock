@@ -227,7 +227,8 @@ def render_logistics_map(orders: pd.DataFrame):
         source, destination = HUB, PVZ[1]
         order_code, status, route, cost = "DEMO-ROUTE", "Планирование", "Hub", None
     else:
-        source = _source_for_name(selected.get("Источник", ""))
+        route_label = str(selected.get("Маршрут", ""))
+        source = HUB if "Hub (обход)" in route_label else _source_for_name(selected.get("Источник", ""))
         destination = _destination_for_name(selected.get("ПВЗ назначения", ""))
         order_code = str(selected.get("Заказ", "order"))
         status = str(selected.get("Статус", "—"))
@@ -284,13 +285,19 @@ def render_logistics_map(orders: pd.DataFrame):
         else:
             st.info("Чтобы запустить демонстрацию движения, переведи заказ в статус «В пути» в разделе заказов.")
 
-    map_points = []
-    for point, short in [(source, "ИСТОЧНИК"), (destination, "ПВЗ")]:
-        map_points.append({**point, "short": short})
-    if source["id"] != HUB["id"]:
-        map_points.append({**HUB, "short": "СЦ WB"})
-    if source["id"] != ANCHOR["id"]:
-        map_points.append({**ANCHOR, "short": "ANCHOR"})
+    # Всегда показываем всю городскую сеть, а не только ПВЗ выбранного заказа.
+    # Это демонстрационные точки/ориентиры; они не являются подтверждённым реестром WB.
+    map_points = [{**point, "short": point["name"].replace("Демо-ПВЗ · ", "")}
+                  for point in PVZ]
+    map_points.extend([
+        {**HUB, "short": "СЦ WB"},
+        {**ANCHOR, "short": "ANCHOR"},
+    ])
+    # Для выбранного маршрута добавляем выделенные маркеры начала и конца.
+    map_points.extend([
+        {**source, "short": "СТАРТ"},
+        {**destination, "short": "ФИНИШ"},
+    ])
 
     st.markdown("#### Карта дорожного маршрута")
     st.pydeck_chart(
