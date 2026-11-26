@@ -843,6 +843,7 @@ elif page=="Финансы":
             return_cost = st.number_input("Стоимость одного возврата, ₽", min_value=0.0, value=0.0, step=10.0, key="forecast_return_cost")
         with z3:
             growth = st.number_input("Рост заказов в месяц, %", min_value=-50.0, max_value=100.0, value=0.0, step=1.0, key="forecast_growth")
+        discount_rate = st.number_input("Ставка дисконтирования, % годовых", min_value=0.0, max_value=100.0, value=15.0, step=1.0, key="forecast_discount")
 
     forecast = forecast_financials(
         monthly_orders=monthly_orders, mesh_share_pct=mesh_share, anchors=anchors,
@@ -852,6 +853,7 @@ elif page=="Финансы":
         storage_per_order=storage, handling_per_order=handling,
         return_rate_pct=return_rate, return_cost=return_cost,
         monthly_system_cost=monthly_system, growth_pct=growth, months=12,
+        discount_rate_annual_pct=discount_rate,
     )
     current = forecast["monthly"]
     k1, k2, k3, k4 = st.columns(4)
@@ -861,6 +863,10 @@ elif page=="Финансы":
     k4.metric("Эффект за месяц", f'{current.get("savings", 0):+,.0f} ₽',
               delta="экономия" if current.get("savings", 0) >= 0 else "убыток",
               delta_color="normal" if current.get("savings", 0) >= 0 else "inverse")
+    r1, r2, r3 = st.columns(3)
+    r1.metric("Эффект за 12 месяцев", f'{forecast["total_savings"]:+,.0f} ₽')
+    r2.metric("ROI на затраты системы", "—" if forecast["roi_pct"] is None else f'{forecast["roi_pct"]:+,.1f}%')
+    r3.metric("NPV за 12 месяцев", f'{forecast["npv"]:+,.0f} ₽')
     if current.get("savings", 0) < 0:
         st.error("При выбранных условиях Mesh увеличивает затраты маркетплейса. Не отправляйте такую партию по Mesh: оставляйте её на Hub или меняйте загрузку/тарифы.")
     else:
