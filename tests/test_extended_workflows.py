@@ -108,6 +108,20 @@ class ExtendedWorkflowTests(unittest.TestCase):
             after[["ПВЗ", "SKU", "Остаток", "Резерв"]].to_dict("records")
         )
 
+    def test_continuous_shift_financials_reconcile_to_hub_baseline(self):
+        database.start_continuous_simulation()
+        database.continuous_simulation_tick()
+        finance = database.simulation_financials()
+        self.assertEqual(finance["orders"], 1)
+        self.assertGreaterEqual(finance["transport_total"], 0)
+        self.assertGreaterEqual(finance["hub_baseline"], 0)
+        self.assertAlmostEqual(
+            finance["savings"],
+            finance["hub_baseline"] - finance["transport_total"],
+            places=2
+        )
+        database.stop_continuous_simulation()
+
     def test_route_incident_creates_plan_and_changes_mesh_route_via_hub(self):
         for number in range(1, 81):
             database.create_order(
