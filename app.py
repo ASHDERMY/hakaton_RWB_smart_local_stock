@@ -70,21 +70,34 @@ if page=="Оперативный центр":
 
     with st.container(border=True):
         st.markdown("#### Непрерывная диспетчерская смена")
-        st.caption("Смена работает, пока открыто приложение и не нажата кнопка «Стоп». Такт — каждые 3 секунды; заказ создаётся раз в 6 секунд и случайно направляется в один из обычных ПВЗ. Для демонстрации целевая партия — до 6 заказов на направление; настройки основной модели не меняются.")
+        st.caption("Смена работает, пока открыто приложение и не нажата кнопка «Стоп». Можно начать с дня 1 или сразу с демонстрационного зрелого состояния на 150-й день. Такт — каждые 3 секунды; заказ создаётся раз в 6 секунд. Для демонстрации целевая партия — до 6 заказов на направление; настройки основной модели не меняются.")
         sim_state = simulation_control_state()
 
     @st.fragment(run_every="3s" if sim_state["running"] else None)
     def live_dispatch_fragment():
         current = simulation_control_state()
         state_col, start_col, stop_col = st.columns([2,1,1])
+        start_day = st.selectbox(
+            "Начать моделирование с",
+            options=[1, 150],
+            format_func=lambda day: "Дня 1 — внедрение с нуля" if day == 1 else "Дня 150 — зрелая сеть",
+            disabled=bool(current["running"]),
+            key="simulation_start_day",
+        )
+        current_day = int(current.get("start_day", 1)) + int(current.get("tick_no", 0)) // 20
         state_col.metric("Состояние смены", "РАБОТАЕТ" if current["running"] else "ОСТАНОВЛЕНА",
-                         f"Такт {current['tick_no']} · {current['shift_code'] or 'нет активной смены'}")
+                         f"День {current_day} · такт {current['tick_no']} · {current['shift_code'] or 'нет активной смены'}")
         if start_col.button("▶ Старт", type="primary", disabled=bool(current["running"]), use_container_width=True):
-            start_continuous_simulation()
-            st.rerun()
+            try:
+                start_continuous_simulation(start_day=start_day)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Не удалось запустить симуляцию: {exc}")
         if stop_col.button("■ Стоп", type="secondary", disabled=not bool(current["running"]), use_container_width=True):
             stop_continuous_simulation()
             st.rerun()
+        if start_day == 150 and not current["running"]:
+            st.caption("День 150 — демонстрационный зрелый сценарий: при необходимости приложение создаст демокаталог и стартовые остатки в Anchor/Hub. Это не воспроизведение фактической истории 149 дней.")
 
         shift = simulation_shift_snapshot()
         live_status = shift["status_counts"]
