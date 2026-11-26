@@ -1566,8 +1566,9 @@ def simulation_shift_snapshot():
             "total_orders":sum(status_counts.values()),
             "status_counts":status_counts,
             "mesh_waiting_orders":c.execute(
-                "SELECT COUNT(*) FROM orders WHERE order_code LIKE ? AND route LIKE 'Mesh%' AND status='Ожидает партии'",
-                (f"{code}-%",)).fetchone()[0],
+                """SELECT COUNT(*) FROM orders o JOIN mesh_batches b ON b.id=o.batch_id
+                WHERE o.order_code LIKE ? AND o.route LIKE 'Mesh%' AND o.status='Ожидает партии'
+                AND b.status='waiting'""", (f"{code}-%",)).fetchone()[0],
             "mesh_in_transit_orders":c.execute(
                 "SELECT COUNT(*) FROM orders WHERE order_code LIKE ? AND route LIKE 'Mesh%' AND status='В пути'",
                 (f"{code}-%",)).fetchone()[0],
@@ -1640,7 +1641,8 @@ def simulation_financials():
         rows=c.execute("""SELECT
                 SUM(CASE WHEN route LIKE 'Mesh%' THEN 1 ELSE 0 END) AS mesh_orders,
                 SUM(CASE WHEN route NOT LIKE 'Mesh%' OR route IS NULL THEN 1 ELSE 0 END) AS hub_orders,
-                SUM(CASE WHEN route LIKE 'Mesh%' AND status='Ожидает партии' THEN 1 ELSE 0 END) AS mesh_waiting_orders,
+                SUM(CASE WHEN route LIKE 'Mesh%' AND status='Ожидает партии' AND batch_id IN
+                    (SELECT id FROM mesh_batches WHERE status='waiting') THEN 1 ELSE 0 END) AS mesh_waiting_orders,
                 SUM(CASE WHEN route LIKE 'Mesh%' AND status='В пути' THEN 1 ELSE 0 END) AS mesh_in_transit_orders,
                 SUM(CASE WHEN route LIKE 'Mesh%' AND status='Готов к выдаче' THEN 1 ELSE 0 END) AS mesh_ready_orders,
                 COUNT(*) AS total
