@@ -390,3 +390,58 @@ def render_live_dispatch_map(vehicles: pd.DataFrame):
         tooltip={"html":"<b>{name}</b><br/>{address}<br/>{kind}",
                  "style":{"backgroundColor":"#222","color":"white"}})
     st.pydeck_chart(deck,use_container_width=True)
+
+
+def render_multi_stop_route_map(anchor, routes):
+    """Render one planned multi-stop route using OSRM road legs where available."""
+    if not routes:
+        st.info("Нет маршрутов для отображения.")
+        return
+    route = routes[0]
+    stops = route.get("stops", [])
+    if not stops:
+        st.info("В выбранном маршруте нет ПВЗ.")
+        return
+    anchor_point = {
+        "id": "planner_anchor", "name": "Anchor", "address": "Опорный мини-склад",
+        "lat": float(anchor["lat"]), "lon": float(anchor["lon"]),
+        "kind": "Проектный Anchor", "short": "ANCHOR", "color": [230, 145, 35],
+    }
+    map_points = [anchor_point]
+    for index, stop in enumerate(stops, start=1):
+        map_points.append({
+            "id": f"planner_pvz_{index}", "name": stop["name"],
+            "address": "Координаты из базы Smart Local Stock",
+            "lat": float(stop["lat"]), "lon": float(stop["lon"]),
+            "kind": "Обычный ПВЗ", "short": f"ПВЗ {index}",
+            "color": [35, 155, 100],
+        })
+    waypoints = [anchor_point] + map_points[1:] + [anchor_point]
+    route_coordinates = []
+    all_road_routes = True
+    road_distance = 0.0
+    road_duration = 0.0
+    for first, second in zip(waypoints[:-1], waypoints[1:]):
+        leg = _road_route(first["lon"], first["lat"], second["lon"], second["lat"])
+        coords = leg["coordinates"]
+        route_coordinates.extend(coords if not route_coordinates else coords[1:])
+        if leg["road_route"] and leg["distance_km"] is not None:
+            road_distance += leg["distance_km"]
+            road_duration += leg["duration_min"] or 0.0
+        else:
+            all_road_routes = False
+    center_lat = sum(point["lat"] for point in map_points) / len(map_points)
+    center_lon = sum(point["lon"] for point in map_points) / len(map_points)
+    st.markdown(f"#### Карта комбинированного рейса № {route['route_no']}")
+    st.write("**Последовательность:** " + " → ".join(["Anchor"] + [p["name"] for p in stops] + ["Anchor"]))
+    st.pydeck_chart(
+        _render_map(map_points, route_coordinates, None, (center_lat, center_lon), 11),
+        use_container_width=True,
+    )
+    if all_road_routes:
+        st.caption(
+            f"Суммарный дорожный путь по OSRM/OpenStreetMap: {road_distance:.1f} км; "
+            f"расчётное время движения: {road_duration:.0f} мин. Это не телематика WB."
+        )
+    else:
+        st.warning("Не все дорожные участки удалось получить. Показаны схематические прямые отрезки без расчётного ETA.")
