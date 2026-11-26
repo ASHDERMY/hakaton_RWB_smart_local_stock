@@ -207,6 +207,16 @@ elif page == "Экономика и сценарии":
     avg_volume = st.number_input(
         "Средний объём заказа, л", min_value=0.1, value=4.0, step=0.5, key="econ_volume"
     )
+    with st.expander("Дополнительные расходы и параметры прогноза"):
+        x1, x2, x3 = st.columns(3)
+        with x1:
+            handling = st.number_input("Обработка и риск, ₽/заказ", min_value=0.0, value=0.0, step=0.5)
+            return_rate = st.number_input("Возвраты, %", min_value=0.0, max_value=100.0, value=0.0, step=0.5)
+        with x2:
+            return_cost = st.number_input("Стоимость возврата, ₽", min_value=0.0, value=0.0, step=10.0)
+            growth = st.number_input("Рост заявок в месяц, %", min_value=-50.0, max_value=100.0, value=0.0, step=1.0)
+        with x3:
+            discount = st.number_input("Ставка дисконтирования, %", min_value=0.0, max_value=100.0, value=15.0, step=1.0)
 
     forecast = forecast_financials(
         monthly_orders=monthly_orders, mesh_share_pct=mesh_share, anchors=anchors,
@@ -215,7 +225,9 @@ elif page == "Экономика и сценарии":
         trip_cost=trip_cost, hub_cost_per_order=hub_cost,
         variable_cost=float(cfg["mesh_variable_cost"]), anchor_fee=anchor_fee,
         replenishment_per_order=replenishment, storage_per_order=storage,
-        monthly_system_cost=system_cost, months=12,
+        handling_per_order=handling, return_rate_pct=return_rate, return_cost=return_cost,
+        monthly_system_cost=system_cost, growth_pct=growth, months=12,
+        discount_rate_annual_pct=discount,
     )
     month = forecast["monthly"]
     m1, m2, m3, m4 = st.columns(4)
@@ -239,6 +251,7 @@ elif page == "Экономика и сценарии":
         max_volume_l=float(cfg["max_volume_l"]), trip_cost=trip_cost,
         hub_cost_per_order=hub_cost, variable_cost=float(cfg["mesh_variable_cost"]),
         replenishment_per_order=replenishment, storage_per_order=storage,
+        handling_per_order=handling, return_rate_pct=return_rate, return_cost=return_cost,
         monthly_system_cost=system_cost, mesh_share_pct=mesh_share,
     )
     st.metric("Предельная доплата Anchor для безубыточности", f"{max_fee:.2f} ₽/заказ")
