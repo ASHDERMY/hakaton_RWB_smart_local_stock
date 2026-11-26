@@ -1256,13 +1256,15 @@ def clear_temporary_simulation_data():
 
 def simulation_state():
     with db() as c:
+        # Self-heal control row in older or manually cleaned local databases.
+        c.execute("INSERT OR IGNORE INTO simulation_control(id,running,tick_no) VALUES(1,0,0)")
         row=c.execute("SELECT * FROM simulation_control WHERE id=1").fetchone()
         events=pd.read_sql_query(
             """SELECT e.tick_no AS 'Такт',e.event_type AS Тип,e.message AS Событие,
             COALESCE(o.order_code,'—') AS Заказ,e.created_at AS Время
             FROM simulation_events e LEFT JOIN orders o ON o.id=e.order_id
             ORDER BY e.id DESC LIMIT 80""",c)
-        return dict(row),events
+        return (dict(row) if row else {"id":1,"running":0,"shift_code":None,"tick_no":0}),events
 
 
 def start_continuous_simulation():
@@ -1325,14 +1327,19 @@ def _auto_supplier_and_anchor_replenishment(tick_no, shift_code):
     # Reserve goods at Hub for a modelled Hub -> Anchor replenishment transport.
     for _,product in products.iterrows():
         with db() as c:
-            c.execute("INSERT OR IGNORE INTO inventory(point_id,product_id,quantity) VALUES(?,?,0)",
+            # Старые SQLite-базы могли не содержать строки остатков для всех SKU в Hub/Anchor.
+            c.execute("INSERT OR IGNORE INTO inventory(point_id,product_id,quantity,reserved,incoming) VALUES(?,?,0,0,0)",
                       (int(anchor["id"]),int(product["id"])))
+            c.execute("INSERT OR IGNORE INTO inventory(point_id,product_id,quantity,reserved,incoming) VALUES(?,?,0,0,0)",
+                      (int(hub["id"]),int(product["id"])))
             arow=c.execute("SELECT quantity-reserved AS available FROM inventory WHERE point_id=? AND product_id=?",
                            (int(anchor["id"]),int(product["id"]))).fetchone()
             hrow=c.execute("SELECT quantity-reserved AS available FROM inventory WHERE point_id=? AND product_id=?",
                            (int(hub["id"]),int(product["id"]))).fetchone()
-            if int(arow["available"])<=2 and int(hrow["available"] or 0)>=8:
-                qty=min(15,int(hrow["available"]))
+            anchor_available=int(arow["available"] or 0) if arow else 0
+            hub_available=int(hrow["available"] or 0) if hrow else 0
+            if anchor_available<=2 and hub_available>=8:
+                qty=min(15,hub_available)
                 ref=f"{shift_code}-H2A-{tick_no:05d}-{int(product['id'])}"
                 c.execute("UPDATE inventory SET quantity=quantity-? WHERE point_id=? AND product_id=?",
                           (qty,int(hub["id"]),int(product["id"])))
