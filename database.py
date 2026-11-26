@@ -1416,11 +1416,11 @@ def prepare_mature_simulation():
     if not product_ids or not destination_ids:
         raise ValueError("Не удалось определить товары или ПВЗ для исторической симуляции.")
 
-    orders_per_day = 40
     day_count = 150
-    total_orders = orders_per_day * day_count
-    monthly_orders = 1200
     settings = settings_dict()
+    monthly_orders = max(1, int(round(float(settings.get("monthly_orders_forecast", {}).get("value", 1200))))) 
+    orders_per_day = max(1, int(round(monthly_orders / 30.0)))
+    total_orders = orders_per_day * day_count
     hub_tariff = float(settings["hub_cost_per_order"]["value"])
     monthly_system_cost = float(settings.get("monthly_system_cost", {}).get("value", 10000))
     system_total = monthly_system_cost * (day_count / 30.0)
@@ -1583,8 +1583,9 @@ def start_continuous_simulation(start_day=1):
             f"Запуск с 150-го дня: в историю загружено {baseline['orders_count']} модельных заказов "
             f"за {baseline['day_count']} дней; Mesh: {baseline['mesh_orders']}, Hub: {baseline['hub_orders']}; "
             f"расчётные затраты с системой: {baseline['total_cost']:.2f} ₽; эффект к базовому Hub: "
-            f"{baseline['net_effect']:.2f} ₽. При 40 заказах/день и окне 5 часов накапливается около "
-            f"8–9 заказов на сеть, поэтому Mesh не проходит порог стоимости. История синтетическая, не реальные заказы RWB."
+            f"{baseline['net_effect']:.2f} ₽. При {baseline['orders_count'] / baseline['day_count']:.0f} заказах/день "
+            f"и окне ожидания {float(settings_dict()['max_wait_hours']['value']):g} ч малые партии не проходят порог стоимости. "
+            f"История синтетическая, не реальные заказы RWB."
             if baseline else "Запущена симуляция с 1-го дня внедрения Smart Local Stock."
         )
         c.execute("INSERT INTO simulation_events(shift_code,tick_no,event_type,message) VALUES(?,0,'Смена',?)",(code,message))
