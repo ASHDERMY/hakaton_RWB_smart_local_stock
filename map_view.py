@@ -25,7 +25,7 @@ def _destination_for_name(name):
         return PVZ[0]
     if "юг" in text or "красноармей" in text:
         return PVZ[3]
-    if "ленин" in text or "восток" in text or "г: " in text:
+    if "ленин" in text or "восток" in text:
         return PVZ[2]
     if "кремл" in text:
         return PVZ[4]
@@ -103,7 +103,7 @@ def render_logistics_map(orders: pd.DataFrame):
         st.write(f"**Источник:** {source['name']}  →  **Назначение:** {dest['name']}")
         st.caption("СЦ Казань (Зеленодольск): Республика Татарстан, Зеленодольск, промышленный парк Зеленодольск, 20. Адрес и координаты опубликованы в перечне сортировочных центров WB.")
     with tab_city:
-        local_path = [ANCHOR, dest] if "Mesh" in route or route == "Демонстрационный" else [dest]
+        local_path = [ANCHOR, dest]
         deck = _deck(city_points, local_path, (56.632, 47.895), 11.1)
         st.pydeck_chart(deck, use_container_width=True)
         st.dataframe(pd.DataFrame([{"Объект": p["name"], "Адрес": p["address"], "Роль": p["kind"], "Координаты": "ориентировочно" if p["id"] != "anchor" else "проектная точка"} for p in [ANCHOR, *PVZ]]), use_container_width=True, hide_index=True)
