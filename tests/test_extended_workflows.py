@@ -143,6 +143,69 @@ class ExtendedWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(row)
         database.stop_continuous_simulation()
 
+    def test_financials_count_mesh_waiting_orders_as_mesh_and_include_projected_trip(self):
+        code = database.start_continuous_simulation()
+        result = database.create_order(f"{code}-O-00001", 1, 2, 1, self.settings)
+        self.assertEqual(result["route"], "Mesh (ожидание)")
+        finance = database.simulation_financials()
+        self.assertEqual(finance["mesh_orders"], 1)
+        self.assertEqual(finance["hub_orders"], 0)
+        self.assertEqual(finance["mesh_waiting_batches"], 1)
+        self.assertAlmostEqual(finance["mesh_trip_cost"], self.settings["local_trip_cost"])
+        database.stop_continuous_simulation()
+
+    def test_replenishment_does_not_duplicate_hub_to_anchor_transport(self):
+        with database.db() as conn:
+            conn.execute("UPDATE inventory SET quantity=0,reserved=0 WHERE point_id=1 AND product_id=1")
+        database._auto_supplier_and_anchor_replenishment(2, "LIVE-TEST")
+        database._auto_supplier_and_anchor_replenishment(3, "LIVE-TEST")
+        with database.db() as conn:
+            pending = conn.execute("""
+                SELECT COUNT(*) AS n,COALESCE(SUM(quantity),0) AS q
+                FROM simulation_supply_transports
+                WHERE shift_code='LIVE-TEST' AND transport_type='Hub → Anchor'
+                AND product_id=1 AND status='В пути'
+            """).fetchone()
+        self.assertEqual(pending["n"], 1)
+        self.assertEqual(pending["q"], 15)
+
+    def test_clear_reverses_full_mesh_lifecycle_and_usable_return(self):
+        before = database.inventory_df().copy()
+        for number in range(1, 81):
+            database.create_order(f"FULL-CYCLE-{number:03d}", 1, 2, 1, self.settings)
+        with database.db() as conn:
+            order_id = conn.execute(
+                "SELECT id FROM orders WHERE order_code='FULL-CYCLE-001'"
+            ).fetchone()["id"]
+        database.update_order_status(order_id, "Готов к выдаче")
+        database.update_order_status(order_id, "Выдан")
+        return_id = database.create_return(order_id, 1, "Проверка возврата")
+        database.process_return(return_id, "Пригоден")
+        with database.db() as conn:
+            conn.execute("INSERT INTO operational_runs(run_code,notes) VALUES(?,?)",
+                         ("FULL-CYCLE", "Тест полного цикла"))
+
+        database.clear_temporary_simulation_data()
+        after = database.inventory_df().copy()
+        self.assertEqual(
+            before[["ПВЗ", "SKU", "Остаток", "Резерв"]].to_dict("records"),
+            after[["ПВЗ", "SKU", "Остаток", "Резерв"]].to_dict("records")
+        )
+        self.assertEqual(len(database.orders_df()), 0)
+        self.assertEqual(len(database.returns_df()), 0)
+
+    def test_operational_snapshot_counts_same_status_across_different_routes(self):
+        code = database.start_continuous_simulation()
+        first = database.create_order(f"{code}-A", 1, 2, 1, self.settings)
+        second = database.create_order(f"{code}-B", 1, 2, 1, self.settings)
+        with database.db() as conn:
+            ids = conn.execute("SELECT id FROM orders WHERE order_code LIKE ? ORDER BY id",
+                               (f"{code}-%",)).fetchall()
+            conn.execute("UPDATE orders SET route='Hub' WHERE id=?", (ids[1]["id"],))
+        snapshot = database.operational_snapshot()
+        self.assertEqual(snapshot["status_counts"]["Ожидает партии"], 2)
+        database.stop_continuous_simulation()
+
     def test_route_incident_creates_plan_and_changes_mesh_route_via_hub(self):
         for number in range(1, 81):
             database.create_order(
