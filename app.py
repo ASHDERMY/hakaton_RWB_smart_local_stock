@@ -794,7 +794,7 @@ elif page=="Финансы":
             hub_cost = st.number_input("Сравнительная стоимость Hub, ₽/заказ", min_value=0.0, value=62.0, step=1.0, key="forecast_hub")
         with x3:
             variable = st.number_input("Переменные расходы Mesh, ₽/заказ", min_value=0.0, value=14.5, step=0.5, key="forecast_variable")
-            anchor_fee = st.number_input("Доплата Anchor за хранение и операции, ₽/заказ", min_value=0.0, value=18.0, step=0.5, key="forecast_anchor_fee")
+            anchor_fee = st.number_input("Доплата Anchor за хранение и операции, ₽/заказ", min_value=0.0, value=3.5, step=0.5, key="forecast_anchor_fee")
             monthly_system = st.number_input("Система и сопровождение, ₽/месяц", min_value=0.0, value=10000.0, step=1000.0, key="forecast_system")
         y1, y2, y3 = st.columns(3)
         with y1:
@@ -892,6 +892,11 @@ elif page=="Настройки модели":
         "local_trip_cost":"Стоимость локального рейса, ₽",
         "hub_cost_per_order":"Сравнительная стоимость Hub, ₽/заказ",
         "mesh_variable_cost":"Прочие переменные Mesh, ₽/заказ",
+        "anchor_fee_per_order":"Доплата Anchor сверх базового тарифа, ₽/заказ",
+        "replenishment_per_order":"Пополнение Anchor, ₽/заказ",
+        "storage_per_order":"Хранение, ₽/заказ",
+        "monthly_system_cost":"Поддержка системы, ₽/месяц",
+        "monthly_orders_forecast":"Прогноз заказов, шт./месяц",
         "batch_target_orders":"Плановая загрузка партии, заказов",
         "max_orders":"Лимит заказов на рейс",
         "max_volume_l":"Лимит объёма, л",
