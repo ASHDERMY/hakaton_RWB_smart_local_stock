@@ -181,6 +181,11 @@ def init_db():
             ("local_trip_cost", 2400, "RUB/рейс", "Гипотеза", "Стоимость локального рейса"),
             ("hub_cost_per_order", 62, "RUB/заказ", "Неподтверждённая гипотеза", "Тестовый ориентир, не себестоимость RWB"),
             ("mesh_variable_cost", 14.5, "RUB/заказ", "Гипотеза", "Прочие переменные расходы на один заказ"),
+            ("anchor_fee_per_order", 3.5, "RUB/заказ", "Проектная гипотеза", "Дополнительная выплата Anchor сверх базового тарифа; предел нужно проверить пилотом"),
+            ("replenishment_per_order", 9.0, "RUB/заказ", "Гипотеза", "Распределённая стоимость пополнения Anchor"),
+            ("storage_per_order", 2.5, "RUB/заказ", "Гипотеза", "Распределённая стоимость хранения"),
+            ("monthly_system_cost", 10000.0, "RUB/месяц", "Гипотеза", "Поддержка и эксплуатация Smart Local Stock"),
+            ("monthly_orders_forecast", 1200.0, "заказов/месяц", "Проектное допущение", "Объём для распределения фиксированных расходов системы"),
             ("batch_target_orders", 80, "заказов", "Проектное допущение", "Целевая загрузка партии; не является фактической вместимостью"),
             ("max_orders", 130, "заказов/рейс", "Проектное ограничение", "Лимит количества заказов в одном рейсе"),
             ("max_volume_l", 1500, "л/рейс", "Проектное ограничение", "Объёмная вместимость одного рейса"),
@@ -421,8 +426,11 @@ def save_setting(key, value):
     positive_keys = {"batch_target_orders", "max_orders", "max_volume_l", "max_wait_hours", "hub_cost_per_order"}
     if key in positive_keys and value <= 0:
         raise ValueError("Для этого параметра значение должно быть больше нуля.")
-    if key in {"local_trip_cost", "mesh_variable_cost"} and value < 0:
+    if key in {"local_trip_cost", "mesh_variable_cost", "anchor_fee_per_order",
+               "replenishment_per_order", "storage_per_order", "monthly_system_cost"} and value < 0:
         raise ValueError("Стоимость не может быть отрицательной.")
+    if key == "monthly_orders_forecast" and value <= 0:
+        raise ValueError("Прогноз заказов должен быть больше нуля.")
     with db() as c:
         cur = c.execute("UPDATE settings SET value=? WHERE key=?", (value, key))
         if cur.rowcount != 1:
@@ -489,7 +497,14 @@ def _close_batch(c, batch_id, settings, force=False):
         int(stats["order_count"]), float(stats["volume_l"]), age_hours,
         float(settings["local_trip_cost"]), float(settings["mesh_variable_cost"]),
         float(settings["hub_cost_per_order"]), float(settings["batch_target_orders"]),
-        int(settings["max_orders"]), float(settings["max_volume_l"]), float(settings["max_wait_hours"])
+        int(settings["max_orders"]), float(settings["max_volume_l"]), float(settings["max_wait_hours"]),
+        additional_cost_per_order=(
+            float(settings.get("anchor_fee_per_order", 0.0))
+            + float(settings.get("replenishment_per_order", 0.0))
+            + float(settings.get("storage_per_order", 0.0))
+            + float(settings.get("monthly_system_cost", 0.0))
+              / max(float(settings.get("monthly_orders_forecast", 1200.0)), 1.0)
+        )
     )
 
     if decision["decision"] == "wait":
