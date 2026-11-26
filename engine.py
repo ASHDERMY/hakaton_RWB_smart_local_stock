@@ -36,6 +36,7 @@ def evaluate_batch(
     max_orders,
     max_volume_l,
     max_wait_hours,
+    additional_cost_per_order=0.0,
 ):
     """
     Decide whether a real accumulated Anchor -> ordinary pickup point batch
@@ -62,7 +63,8 @@ def evaluate_batch(
             "reason": "Ожидание накопления партии: целевой объём ещё не достигнут, лимит времени не истёк.",
         }
 
-    mesh_cost_per_order = trip_cost / order_count + mesh_variable_cost_per_order
+    mesh_cost_per_order = (trip_cost / order_count + mesh_variable_cost_per_order
+                          + max(0.0, float(additional_cost_per_order)))
     if mesh_cost_per_order < hub_cost_per_order:
         trigger = (
             "Достигнута целевая загрузка партии."
