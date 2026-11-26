@@ -802,9 +802,10 @@ def add_incident(order_id, category, description):
                     "Это сценарное перенаправление через Hub, а не команда реальному перевозчику."
                 )
                 applied_route = "Hub (обход)"
+                hub_rate = float(c.execute("SELECT value FROM settings WHERE key='hub_cost_per_order'").fetchone()["value"])
                 c.execute(
-                    "UPDATE orders SET route=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                    (applied_route, order["id"])
+                    "UPDATE orders SET route=?,estimated_cost=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (applied_route, hub_rate, order["id"])
                 )
                 applied = 1
             else:
