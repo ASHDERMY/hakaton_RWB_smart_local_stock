@@ -9,7 +9,7 @@ from database import (
     movements_df, incidents_df, add_incident, finance_summary,
     mesh_batches_df, process_mesh_batches, sellers_df, supplier_deliveries_df,
     create_seller, create_supplier_delivery, receive_supplier_delivery, add_pickup_point,
-    operational_snapshot, operational_runs_df, run_daily_operations, clear_temporary_simulation_data
+    operational_snapshot, operational_runs_df, run_daily_operations, clear_temporary_simulation_data, simulation_state, start_continuous_simulation, stop_continuous_simulation, continuous_simulation_tick, simulation_timeline_df, simulation_vehicles_df
 )
 
 st.set_page_config(page_title="Smart Local Stock", page_icon="📦", layout="wide")
@@ -58,37 +58,57 @@ if page=="Оперативный центр":
     today = snap["today"]
 
     with st.container(border=True):
-        st.markdown("#### Запуск повседневной смены (симуляция)")
-        st.write("Кнопка создаёт поток тестовых заказов на основе реальных остатков, запускает правила выбора Mesh/Hub, обрабатывает партии и проводит часть отправлений до ПВЗ и выдачи. Результаты сохраняются в базе и появляются в этом центре.")
-        active_destinations = points_df()
-        active_destinations = active_destinations[
-            (active_destinations["Тип"] == "Обычный") & (active_destinations["Активен"] == 1)
-        ] if not active_destinations.empty else active_destinations
-        if active_destinations.empty:
-            st.warning("Добавьте хотя бы один активный обычный ПВЗ, чтобы запустить смену.")
+        st.markdown("#### Непрерывная диспетчерская смена")
+        st.caption("Смена работает, пока открыт раздел и не нажата кнопка «Стоп». Один такт каждые 2 секунды. Заказы, поставки, транспорт, возвраты и инциденты записываются в SQLite.")
+        sim_state, _ = simulation_state()
+        state_col, start_col, stop_col = st.columns([2,1,1])
+        state_col.metric("Состояние смены", "РАБОТАЕТ" if sim_state["running"] else "ОСТАНОВЛЕНА",
+                         f"Такт {sim_state['tick_no']} · {sim_state['shift_code'] or 'нет активной смены'}")
+        if start_col.button("▶ Старт", type="primary", disabled=bool(sim_state["running"]), use_container_width=True):
+            start_continuous_simulation()
+            st.rerun()
+        if stop_col.button("■ Стоп", type="secondary", disabled=not bool(sim_state["running"]), use_container_width=True):
+            stop_continuous_simulation()
+            st.rerun()
+
+    @st.fragment(run_every="2s" if sim_state["running"] else None)
+    def live_dispatch_fragment():
+        current, _ = simulation_state()
+        if current["running"]:
+            try:
+                continuous_simulation_tick()
+            except Exception as exc:
+                st.error(f"Ошибка такта симуляции: {exc}")
+                stop_continuous_simulation()
+        current, _ = simulation_state()
+        snap_live = operational_snapshot()
+        live_status = snap_live["status_counts"]
+        a,b,c,d = st.columns(4)
+        a.metric("Такт", current["tick_no"])
+        a2 = current.get("shift_code") or "—"
+        b.metric("В пути", live_status.get("В пути",0))
+        c.metric("Ожидают выдачи", live_status.get("Готов к выдаче",0))
+        d.metric("Выдано", live_status.get("Выдан",0))
+        st.caption(f"Смена: {a2} · Автообновление каждые 2 секунды")
+        timeline = simulation_timeline_df(30)
+        st.markdown("##### Хронология событий")
+        if timeline.empty:
+            st.info("События появятся после старта смены.")
         else:
-            result = None
-            with st.form("daily_operations_form"):
-                sim_col1, sim_col2 = st.columns([1, 1])
-                with sim_col1:
-                    shift_orders = st.number_input("Заказов в смене", min_value=1, max_value=500, value=80, step=5)
-                    destination_map = dict(zip(
-                        active_destinations["Название"] + " · " + active_destinations["Город"],
-                        active_destinations["id"]
-                    ))
-                    shift_destination = st.selectbox("ПВЗ, на который направляем поток", list(destination_map))
-                with sim_col2:
-                    simulate_incident = st.checkbox("Добавить дорожный инцидент для проверки диспетчера", value=False)
-                    st.caption("Поток одной демонстрационной смены концентрируется на выбранном ПВЗ, чтобы было видно накопление и решение по партии Mesh.")
-                start_shift = st.form_submit_button("▶ Запустить повседневную работу", type="primary", use_container_width=True)
-            if start_shift:
-                result = show_error(lambda: run_daily_operations(
-                    int(shift_orders), simulate_incident, int(destination_map[shift_destination])
-                ))
-            if result:
-                st.success(f"Смена {result['run_code']} завершена: создано {result['created_orders']} заказов, отправлено {result['dispatched_orders']}, прибыло в ПВЗ {result['ready_orders']}, выдано {result['issued_orders']}.")
-                st.write(f"Не создано из-за ограничений остатков: {result['failed_orders']}. Инцидентов: {result['incidents_created']}. Расчётные затраты: {result['estimated_cost']:,.2f} ₽.")
-                st.rerun()
+            st.dataframe(timeline,use_container_width=True,hide_index=True,height=260)
+        vehicles = simulation_vehicles_df()
+        st.markdown("##### Карта активных перевозок")
+        if vehicles.empty:
+            st.info("Сейчас нет заказов в пути. Новые рейсы появятся по мере формирования потока.")
+        else:
+            from map_view import render_live_dispatch_map
+            render_live_dispatch_map(vehicles)
+        fin_live = finance_summary()
+        st.metric("Накопленные расчётные логистические затраты", f"{fin_live['estimated_cost']:,.2f} ₽")
+        st.caption("Финансы используют текущие настройки модели: Mesh = стоимость рейса / число заказов партии + переменные расходы; Hub = ставка на заказ. Значения — гипотезы, не фактические тарифы RWB.")
+        if current["running"]:
+            st.info("Смена активна. Нажми «Стоп» выше, чтобы завершить её.")
+    live_dispatch_fragment()
 
     st.markdown("#### Состояние сети сейчас")
     alerts = []
@@ -204,7 +224,7 @@ if page=="Оперативный центр":
                 st.rerun()
             except Exception as exc:
                 st.error(f"Не удалось очистить данные: {exc}")
-    st.caption("Обновление выполняется при перерисовке страницы. Симуляция не является реальной интеграцией с API Wildberries и не работает в фоне после закрытия приложения.")
+    st.caption("Симуляция использует модельные события и виртуальные перевозки. Она не является интеграцией с API Wildberries, не использует GPS и прекращается при остановке приложения.")
 
 
 if page=="Панель управления":
