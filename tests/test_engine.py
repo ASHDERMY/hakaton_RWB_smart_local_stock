@@ -1,5 +1,5 @@
 import unittest
-from engine import choose_route, calculate_costs, replenishment_qty, evaluate_batch
+from engine import choose_route, calculate_costs, replenishment_qty, evaluate_batch, plan_multi_stop_routes
 
 
 class EngineTests(unittest.TestCase):
@@ -55,6 +55,37 @@ class EngineTests(unittest.TestCase):
     def test_over_capacity_batch_is_rejected(self):
         result = evaluate_batch(131, 100, 1, 2400, 14.5, 62, 80, 130, 1500, 5)
         self.assertEqual(result["decision"], "capacity_error")
+
+    def test_multi_stop_planner_groups_nearby_pvz(self):
+        anchor = {"lat": 56.631364, "lon": 47.890917}
+        stops = [
+            {"point_id": 1, "name": "PVZ A", "lat": 56.6320, "lon": 47.8920, "orders": 20, "volume_l": 80},
+            {"point_id": 2, "name": "PVZ B", "lat": 56.6330, "lon": 47.8930, "orders": 25, "volume_l": 90},
+        ]
+        result = plan_multi_stop_routes(anchor, stops, 130, 1500, 2400, 14.5, 62, 2.0)
+        self.assertEqual(len(result["routes"]), 1)
+        self.assertEqual(result["routes"][0]["total_orders"], 45)
+        self.assertEqual(len(result["routes"][0]["stops"]), 2)
+
+    def test_multi_stop_planner_separates_remote_pvz(self):
+        anchor = {"lat": 56.631364, "lon": 47.890917}
+        stops = [
+            {"point_id": 1, "name": "PVZ Near", "lat": 56.6320, "lon": 47.8920, "orders": 20, "volume_l": 80},
+            {"point_id": 2, "name": "PVZ Remote", "lat": 56.6500, "lon": 47.9500, "orders": 25, "volume_l": 90},
+        ]
+        result = plan_multi_stop_routes(anchor, stops, 130, 1500, 2400, 14.5, 62, 2.0)
+        self.assertEqual(len(result["routes"]), 2)
+        self.assertEqual([len(r["stops"]) for r in result["routes"]], [1, 1])
+
+    def test_multi_stop_planner_respects_capacity(self):
+        anchor = {"lat": 56.631364, "lon": 47.890917}
+        stops = [
+            {"point_id": 1, "name": "PVZ A", "lat": 56.6320, "lon": 47.8920, "orders": 80, "volume_l": 400},
+            {"point_id": 2, "name": "PVZ B", "lat": 56.6330, "lon": 47.8930, "orders": 60, "volume_l": 300},
+        ]
+        result = plan_multi_stop_routes(anchor, stops, 100, 1500, 2400, 14.5, 62, 2.0)
+        self.assertEqual(len(result["routes"]), 2)
+        self.assertTrue(all(r["total_orders"] <= 100 for r in result["routes"]))
 
 
 if __name__ == "__main__":
