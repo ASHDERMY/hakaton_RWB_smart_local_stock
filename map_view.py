@@ -344,3 +344,44 @@ def render_logistics_map(orders: pd.DataFrame):
     stages = ["Резерв товара", "Формирование партии / сборка", "Отправка", "Приёмка на ПВЗ", "Выдача покупателю"]
     st.write(" → ".join(stages))
     st.caption("Реальный процесс WB зависит от модели поставки и маршрута в кабинете партнёра. Smart Local Stock демонстрирует предлагаемую Mesh-схему и резервный сценарий через Hub.")
+
+
+def render_live_dispatch_map(vehicles: pd.DataFrame):
+    """Show a live simulated fleet on the regional map; markers are not GPS."""
+    st.caption("Все маркеры транспорта — виртуальные позиции симулятора. Для наглядности используется проектная география Anchor → демо-ПВЗ; фактические треки WB недоступны.")
+    points=[{**point,"short":point["name"].replace("Демо-ПВЗ · ","")} for point in PVZ]
+    points.extend([{**HUB,"short":"СЦ WB"},{**ANCHOR,"short":"ANCHOR"}])
+    route_layers=[]
+    vehicle_rows=[]
+    for _,row in vehicles.iterrows():
+        destination=_destination_for_name(row.get("Назначение",""))
+        source=HUB if str(row.get("Тип_источника",""))=="Hub" else ANCHOR
+        route=_road_route(source["lon"],source["lat"],destination["lon"],destination["lat"])
+        coords=route["coordinates"]
+        progress=max(0.0,min(1.0,float(row.get("Прогресс",0))))
+        position=_point_at_fraction(coords,progress)
+        route_layers.append({"path":coords})
+        vehicle_rows.append({
+            "lon":position[0],"lat":position[1],
+            "name":str(row.get("Заказ","Транспорт")),
+            "address":f"{row.get('Маршрут','')} · {progress:.0%}",
+            "kind":"Виртуальный транспорт",
+        })
+    layers=[
+        pdk.Layer("PathLayer",data=route_layers,get_path="path",get_color=[55,120,205,100],
+                  get_width=3,width_min_pixels=2,pickable=False),
+        pdk.Layer("ScatterplotLayer",data=points,get_position="[lon,lat]",get_fill_color="color",
+                  get_line_color=[255,255,255],get_radius=180,radius_min_pixels=7,radius_max_pixels=16,
+                  stroked=True,pickable=True),
+        pdk.Layer("ScatterplotLayer",data=vehicle_rows,get_position="[lon,lat]",
+                  get_fill_color=[235,55,45],get_line_color=[255,255,255],get_radius=300,
+                  radius_min_pixels=10,radius_max_pixels=18,stroked=True,pickable=True),
+        pdk.Layer("TextLayer",data=vehicle_rows,get_position="[lon,lat]",get_text="name",
+                  get_size=10,get_color=[150,25,25],get_pixel_offset=[0,-18],pickable=False),
+    ]
+    deck=pdk.Deck(layers=layers,initial_view_state=pdk.ViewState(
+        latitude=56.25,longitude=48.35,zoom=7.2,pitch=0),
+        map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+        tooltip={"html":"<b>{name}</b><br/>{address}<br/>{kind}",
+                 "style":{"backgroundColor":"#222","color":"white"}})
+    st.pydeck_chart(deck,use_container_width=True)
