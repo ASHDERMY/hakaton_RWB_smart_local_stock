@@ -1,6 +1,7 @@
 import sqlite3
 from pathlib import Path
 import pandas as pd
+from contextlib import contextmanager
 
 DB_PATH = Path("data/smart_local_stock.db")
 
@@ -12,6 +13,18 @@ def connect():
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
+@contextmanager
+def db():
+    conn = connect()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
 def _add_column(conn, table, definition):
     name = definition.split()[0]
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -19,7 +32,7 @@ def _add_column(conn, table, definition):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
 
 def init_db():
-    with connect() as c:
+    with db() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS pickup_points(
             id INTEGER PRIMARY KEY, name TEXT NOT NULL, point_type TEXT NOT NULL,
