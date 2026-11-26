@@ -201,6 +201,26 @@ class ExtendedWorkflowTests(unittest.TestCase):
         self.assertEqual(state["tick_no"], 0)
         database.stop_continuous_simulation()
 
+    def test_batch_routing_includes_anchor_replenishment_storage_and_system_costs(self):
+        database.save_setting("anchor_fee_per_order", 3.5)
+        database.save_setting("replenishment_per_order", 9.0)
+        database.save_setting("storage_per_order", 2.5)
+        database.save_setting("monthly_system_cost", 10000.0)
+        database.save_setting("monthly_orders_forecast", 1200.0)
+        destination = database.points_df()
+        destination_id = int(destination[destination["Название"] == "ПВЗ Север"].iloc[0]["id"])
+        for number in range(1, 81):
+            database.create_order(f"FULLCOST-{number:03d}", 1, destination_id, 1, self.settings)
+        with database.db() as conn:
+            batch = conn.execute(
+                "SELECT status FROM mesh_batches ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            routes = conn.execute(
+                "SELECT DISTINCT route FROM orders WHERE order_code LIKE 'FULLCOST-%'"
+            ).fetchall()
+        self.assertEqual(batch["status"], "fallback_hub")
+        self.assertEqual({row["route"] for row in routes}, {"Hub"})
+
     def test_continuous_simulation_rejects_unsupported_start_day(self):
         with self.assertRaises(ValueError):
             database.start_continuous_simulation(start_day=42)
