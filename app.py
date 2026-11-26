@@ -9,7 +9,7 @@ from database import (
     movements_df, incidents_df, add_incident, finance_summary,
     mesh_batches_df, process_mesh_batches, sellers_df, supplier_deliveries_df,
     create_seller, create_supplier_delivery, receive_supplier_delivery, add_pickup_point,
-    operational_snapshot, operational_runs_df, run_daily_operations, clear_temporary_simulation_data, simulation_state, start_continuous_simulation, stop_continuous_simulation, continuous_simulation_tick, simulation_timeline_df, simulation_vehicles_df, simulation_financials
+    operational_snapshot, operational_runs_df, run_daily_operations, clear_temporary_simulation_data, simulation_state, start_continuous_simulation, stop_continuous_simulation, continuous_simulation_tick, simulation_timeline_df, simulation_vehicles_df, simulation_financials, simulation_shift_snapshot
 )
 
 st.set_page_config(page_title="Smart Local Stock", page_icon="📦", layout="wide")
