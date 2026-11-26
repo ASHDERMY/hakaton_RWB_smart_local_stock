@@ -9,7 +9,7 @@ from database import (
     movements_df, incidents_df, add_incident, finance_summary,
     mesh_batches_df, process_mesh_batches, sellers_df, supplier_deliveries_df,
     create_seller, create_supplier_delivery, receive_supplier_delivery, add_pickup_point,
-    operational_snapshot, operational_runs_df, run_daily_operations
+    operational_snapshot, operational_runs_df, run_daily_operations, clear_temporary_simulation_data
 )
 
 st.set_page_config(page_title="Smart Local Stock", page_icon="📦", layout="wide")
@@ -189,6 +189,21 @@ if page=="Оперативный центр":
         st.dataframe(runs,use_container_width=True,hide_index=True)
     if st.button("↻ Обновить оперативные показатели",use_container_width=True):
         st.rerun()
+
+    with st.expander("Очистка временных данных симуляции", expanded=False):
+        st.warning("Будут удалены тестовые заказы смен SHIFT-*, связанные с ними происшествия, возвраты, движения и история запусков. Каталог, точки, настройки, остатки и ручные заказы сохраняются; остатки по тестовым операциям восстанавливаются.")
+        confirm_clear = st.checkbox("Подтверждаю очистку данных тестовых смен", key="confirm_clear_simulation")
+        if st.button("🧹 Очистить временные данные", type="secondary", disabled=not confirm_clear, use_container_width=True):
+            try:
+                cleared = clear_temporary_simulation_data()
+                st.success(
+                    f"Очистка завершена: смен — {cleared['runs']}, заказов — {cleared['orders']}, "
+                    f"происшествий — {cleared['incidents']}, возвратов — {cleared['returns']}, "
+                    f"пустых партий — {cleared['batches']}."
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Не удалось очистить данные: {exc}")
     st.caption("Обновление выполняется при перерисовке страницы. Симуляция не является реальной интеграцией с API Wildberries и не работает в фоне после закрытия приложения.")
 
 
