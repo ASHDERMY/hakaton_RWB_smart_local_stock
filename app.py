@@ -33,15 +33,13 @@ def show_error(fn):
 st.title("📦 Smart Local Stock")
 st.caption("Локальный запас → консолидация → выбор Mesh или Hub → доставка в ПВЗ → выдача. Расчётные тарифы помечены как гипотезы.")
 with st.sidebar:
-    page=st.radio("Рабочие разделы",[
-        "Оперативный центр","Панель управления","Карта логистики","Товары и ПВЗ","Склад и приёмка","Продавцы и поставки",
-        "Заказы","Партии Mesh","Возвраты","Инциденты","Экономика участников","Финансы","Настройки модели","Журнал операций"
+    page=st.radio("Разделы для демонстрации",[
+        "Оперативный центр",
+        "Карта логистики",
+        "Экономика участников",
+        "Финансы",
     ])
-    st.divider()
-    if st.button("Загрузить демонстрационные данные",use_container_width=True):
-        seed_demo()
-        st.success("Демоданные добавлены. Повторное нажатие не дублирует записи.")
-    st.caption("Локальная база SQLite")
+    st.caption("Smart Local Stock · демонстрационный MVP")
 
 # Background fragment keeps the simulation advancing even when the operator opens another page.
 _background_state = simulation_control_state()
