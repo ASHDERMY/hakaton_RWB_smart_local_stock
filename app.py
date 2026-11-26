@@ -10,7 +10,7 @@ from database import (
     movements_df, incidents_df, add_incident, finance_summary,
     mesh_batches_df, process_mesh_batches, sellers_df, supplier_deliveries_df,
     create_seller, create_supplier_delivery, receive_supplier_delivery, add_pickup_point,
-    operational_snapshot, operational_runs_df, run_daily_operations, clear_temporary_simulation_data, simulation_state, simulation_control_state, start_continuous_simulation, stop_continuous_simulation, continuous_simulation_tick, simulation_timeline_df, simulation_vehicles_df, simulation_financials, simulation_shift_snapshot
+    operational_snapshot, operational_runs_df, run_daily_operations, clear_temporary_simulation_data, simulation_state, simulation_control_state, start_continuous_simulation, stop_continuous_simulation, continuous_simulation_tick, simulation_timeline_df, simulation_vehicles_df, simulation_financials, simulation_shift_snapshot, mature_history_summary, mature_history_daily_df
 )
 
 st.set_page_config(page_title="Smart Local Stock", page_icon="📦", layout="wide")
@@ -59,6 +59,15 @@ _continuous_simulation_runner()
 if page=="Оперативный центр":
     st.subheader("Оперативный центр логистической сети")
     st.caption("Единый экран диспетчера: заказы, запасы, партии, происшествия, поставки, возвраты и расчётные финансы. Все показатели берутся из текущей SQLite-базы.")
+    history = mature_history_summary()
+    if history:
+        st.markdown("#### История зрелой сети: первые 150 дней")
+        h1, h2, h3, h4 = st.columns(4)
+        h1.metric("Исторические заказы", f"{history['orders_count']:,}".replace(",", " "))
+        h2.metric("Mesh / Hub", f"{history['mesh_orders']} / {history['hub_orders']}")
+        h3.metric("Исторические рейсы Mesh", history["mesh_trips"])
+        h4.metric("Эффект против Hub", f"{history['net_effect']:+,.0f} ₽")
+        st.caption("Это синтетическая 150-дневная история для демонстрации: 40 заказов в день. При текущих ограничениях ожидания и тарифах маршрутизатор оставляет поток на Hub, если Mesh не проходит полную экономику. Это не реальные данные RWB.")
     snap = operational_snapshot()
     status = snap["status_counts"]
     inv = snap["inventory"]
@@ -781,6 +790,18 @@ elif page=="Экономика участников":
 elif page=="Финансы":
     st.subheader("Финансы и прогноз экономики Mesh")
     st.caption("Сравниваем одну и ту же клиентскую нагрузку: базовый маршрут через Hub против гибридной схемы Mesh + Hub. Все тарифы ниже — изменяемые гипотезы, не внутренние данные RWB.")
+    history = mature_history_summary()
+    if history:
+        st.markdown("#### Накопленный результат сценария на 150-й день")
+        h1,h2,h3,h4=st.columns(4)
+        h1.metric("Заказы", f"{history['orders_count']:,}".replace(",", " "))
+        h2.metric("База: Hub", f"{history['baseline_cost']:,.0f} ₽")
+        h3.metric("Система + логистика", f"{history['total_cost']:,.0f} ₽")
+        h4.metric("Итоговый эффект", f"{history['net_effect']:+,.0f} ₽")
+        daily_history = mature_history_daily_df()
+        if not daily_history.empty:
+            st.line_chart(daily_history.set_index("День")[["Накопленный эффект, ₽"]])
+        st.caption("Синтетическая история 150 дней: 6 000 заказов при темпе 40/день. В ней фиксированные расходы системы учтены отдельно от стоимости заказов.")
 
     with st.expander("Параметры финансового прогноза", expanded=True):
         x1, x2, x3 = st.columns(3)
