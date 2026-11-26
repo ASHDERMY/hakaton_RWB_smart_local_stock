@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from map_view import render_logistics_map, render_multi_stop_route_map
 from engine import replenishment_qty, plan_multi_stop_routes
+from financial_model import forecast_financials, break_even_anchor_fee
 from database import (
     init_db, seed_demo, products_df, inventory_df, points_df, orders_df, local_delivery_demand_df, save_point_coordinates,
     settings_dict, save_setting, add_product, receive_stock, create_order,
@@ -778,7 +779,100 @@ elif page=="Экономика участников":
     st.code("C_Mesh = C_trip / N_batch + C_variable\nDelta_Marketplace = C_Hub - C_Mesh - Reward_PVZ - Other_Costs\nProfit_Seller = Price - COGS - Commission - Seller_Logistics\nIncome_PVZ = Receiving + Storage * Days + Picking", language="text")
 
 elif page=="Финансы":
-    st.subheader("Фактическая модель по зарегистрированным заказам")
+    st.subheader("Финансы и прогноз экономики Mesh")
+    st.caption("Сравниваем одну и ту же клиентскую нагрузку: базовый маршрут через Hub против гибридной схемы Mesh + Hub. Все тарифы ниже — изменяемые гипотезы, не внутренние данные RWB.")
+
+    with st.expander("Параметры финансового прогноза", expanded=True):
+        x1, x2, x3 = st.columns(3)
+        with x1:
+            monthly_orders = st.number_input("Заказов в месяц", min_value=1, value=1200, step=100, key="forecast_orders")
+            anchors = st.number_input("Количество Anchor", min_value=1, value=3, step=1, key="forecast_anchors")
+            mesh_share = st.slider("Доля заказов Mesh, %", 0, 100, 100, key="forecast_mesh_share")
+        with x2:
+            batch_orders = st.number_input("Заказов в одном рейсе", min_value=1, max_value=130, value=80, step=5, key="forecast_batch")
+            trip_cost = st.number_input("Стоимость локального рейса, ₽", min_value=0.0, value=2400.0, step=100.0, key="forecast_trip")
+            hub_cost = st.number_input("Сравнительная стоимость Hub, ₽/заказ", min_value=0.0, value=62.0, step=1.0, key="forecast_hub")
+        with x3:
+            variable = st.number_input("Переменные расходы Mesh, ₽/заказ", min_value=0.0, value=14.5, step=0.5, key="forecast_variable")
+            anchor_fee = st.number_input("Доплата Anchor за хранение и операции, ₽/заказ", min_value=0.0, value=18.0, step=0.5, key="forecast_anchor_fee")
+            monthly_system = st.number_input("Система и сопровождение, ₽/месяц", min_value=0.0, value=10000.0, step=1000.0, key="forecast_system")
+        y1, y2, y3 = st.columns(3)
+        with y1:
+            replenishment = st.number_input("Пополнение Anchor, ₽/заказ", min_value=0.0, value=9.0, step=0.5, key="forecast_replenishment")
+        with y2:
+            storage = st.number_input("Хранение, ₽/заказ", min_value=0.0, value=2.5, step=0.5, key="forecast_storage")
+        with y3:
+            handling = st.number_input("Дополнительная обработка и риск, ₽/заказ", min_value=0.0, value=0.0, step=0.5, key="forecast_handling")
+        z1, z2, z3 = st.columns(3)
+        with z1:
+            return_rate = st.number_input("Доля возвратов, %", min_value=0.0, max_value=100.0, value=0.0, step=0.5, key="forecast_return_rate")
+        with z2:
+            return_cost = st.number_input("Стоимость одного возврата, ₽", min_value=0.0, value=0.0, step=10.0, key="forecast_return_cost")
+        with z3:
+            growth = st.number_input("Рост заказов в месяц, %", min_value=-50.0, max_value=100.0, value=0.0, step=1.0, key="forecast_growth")
+
+    forecast = forecast_financials(
+        monthly_orders=monthly_orders, mesh_share_pct=mesh_share, anchors=anchors,
+        batch_orders=batch_orders, max_orders=130, avg_order_volume_l=4.0, max_volume_l=1500,
+        trip_cost=trip_cost, hub_cost_per_order=hub_cost, variable_cost=variable,
+        anchor_fee=anchor_fee, replenishment_per_order=replenishment,
+        storage_per_order=storage, handling_per_order=handling,
+        return_rate_pct=return_rate, return_cost=return_cost,
+        monthly_system_cost=monthly_system, growth_pct=growth, months=12,
+    )
+    current = forecast["monthly"]
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Mesh рейсов / месяц", current.get("trips", 0))
+    k2.metric("Полная стоимость Mesh / заказ", f'{current.get("mesh_cost_per_order", 0):,.2f} ₽')
+    k3.metric("База: всё через Hub", f'{current.get("baseline_hub_cost", 0):,.0f} ₽')
+    k4.metric("Эффект за месяц", f'{current.get("savings", 0):+,.0f} ₽',
+              delta="экономия" if current.get("savings", 0) >= 0 else "убыток",
+              delta_color="normal" if current.get("savings", 0) >= 0 else "inverse')
+    if current.get("savings", 0) < 0:
+        st.error("При выбранных условиях Mesh увеличивает затраты маркетплейса. Не отправляйте такую партию по Mesh: оставляйте её на Hub или меняйте загрузку/тарифы.")
+    else:
+        st.success("При выбранных допущениях гибридная схема дешевле базового варианта Hub. Проверьте устойчивость результата к изменению спроса и тарифов.")
+
+    max_fee = break_even_anchor_fee(
+        orders_per_month=monthly_orders, anchors=anchors, batch_orders=batch_orders,
+        max_orders=130, avg_order_volume_l=4.0, max_volume_l=1500,
+        trip_cost=trip_cost, hub_cost_per_order=hub_cost, variable_cost=variable,
+        replenishment_per_order=replenishment, storage_per_order=storage,
+        handling_per_order=handling, return_rate_pct=return_rate, return_cost=return_cost,
+        monthly_system_cost=monthly_system,
+    )
+    st.metric("Максимальная безубыточная доплата Anchor", f"{max_fee:,.2f} ₽/заказ",
+              help="Это верхняя граница при текущих остальных допущениях. Если значение отрицательное, даже нулевая доплата не делает Mesh выгоднее Hub.")
+    st.caption("В расчёт входят рейсы, переменные расходы, доплата Anchor, пополнение, хранение, обработка/риск, возвраты и распределённая стоимость системы. Стоимость закупки товара и налоги не включены: для сравнения логистики они должны быть одинаково учтены в обоих сценариях.")
+
+    st.markdown("#### Прогноз на 12 месяцев")
+    monthly_rows = pd.DataFrame(forecast["rows"])
+    st.line_chart(monthly_rows.set_index("month")[["cumulative_savings"]])
+    st.dataframe(monthly_rows[["month","orders","mesh_orders","hub_orders","trips","baseline_hub_cost","combined_cost","savings","cumulative_savings"]].rename(columns={
+        "month":"Месяц","orders":"Заказы","mesh_orders":"Mesh","hub_orders":"Hub","trips":"Рейсы",
+        "baseline_hub_cost":"База Hub, ₽","combined_cost":"Mesh + Hub, ₽","savings":"Эффект, ₽",
+        "cumulative_savings":"Накопленный эффект, ₽"
+    }),use_container_width=True,hide_index=True)
+
+    st.markdown("#### Чувствительность к загрузке рейса")
+    sensitivity = []
+    for target in sorted(set([max(1, min(80, int(batch_orders))), max(1, min(100, int(batch_orders))), 130])):
+        test = forecast_financials(
+            monthly_orders=monthly_orders, mesh_share_pct=mesh_share, anchors=anchors,
+            batch_orders=target, max_orders=130, avg_order_volume_l=4.0, max_volume_l=1500,
+            trip_cost=trip_cost, hub_cost_per_order=hub_cost, variable_cost=variable,
+            anchor_fee=anchor_fee, replenishment_per_order=replenishment,
+            storage_per_order=storage, handling_per_order=handling,
+            return_rate_pct=return_rate, return_cost=return_cost,
+            monthly_system_cost=monthly_system, months=1,
+        )["monthly"]
+        sensitivity.append({"Заказов на рейс": target, "Рейсов": test["trips"],
+                            "Mesh/заказ, ₽": test["mesh_cost_per_order"],
+                            "Эффект против Hub, ₽/мес": test["savings"]})
+    st.dataframe(pd.DataFrame(sensitivity).drop_duplicates("Заказов на рейс"),use_container_width=True,hide_index=True)
+
+    st.divider()
+    st.subheader("Фактические записи текущей базы")
     f=finance_summary()
     a,b,c=st.columns(3)
     a.metric("Всего заказов",f["orders_count"])
@@ -786,11 +880,10 @@ elif page=="Финансы":
     c.metric("Mesh / Hub",f'{f["mesh_orders"]} / {f["hub_orders"]}')
     od=orders_df()
     if not od.empty:
-        st.markdown("#### Структура маршрутов")
         chart=od.groupby("Маршрут",dropna=False)["Оценка затрат, ₽"].sum().reset_index()
         st.bar_chart(chart.set_index("Маршрут"))
         st.dataframe(od[["Заказ","Маршрут","Статус","Оценка затрат, ₽"]],use_container_width=True,hide_index=True)
-    st.warning("Это расчётная оценка по параметрам модели, а не бухгалтерские данные или подтверждённая себестоимость RWB.")
+    st.warning("Историческая оценка затрат по заказам не является бухгалтерским P&L. Для финансового решения используйте прогноз выше и подтверждайте все тарифы пилотом.")
 
 elif page=="Настройки модели":
     st.subheader("Параметры логистической модели")
