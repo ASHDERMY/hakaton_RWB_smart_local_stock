@@ -157,8 +157,8 @@ class ExtendedWorkflowTests(unittest.TestCase):
     def test_replenishment_does_not_duplicate_hub_to_anchor_transport(self):
         with database.db() as conn:
             conn.execute("UPDATE inventory SET quantity=0,reserved=0 WHERE point_id=1 AND product_id=1")
-        database._auto_supplier_and_anchor_replenishment(2, "LIVE-TEST")
-        database._auto_supplier_and_anchor_replenishment(3, "LIVE-TEST")
+        database._auto_supplier_and_anchor_replenishment(1, "LIVE-TEST")
+        database._auto_supplier_and_anchor_replenishment(4, "LIVE-TEST")
         with database.db() as conn:
             pending = conn.execute("""
                 SELECT COUNT(*) AS n,COALESCE(SUM(quantity),0) AS q
