@@ -115,7 +115,8 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 
 def plan_multi_stop_routes(anchor, stops, max_orders, max_volume_l, trip_cost,
-                           variable_cost_per_order, hub_cost_per_order, max_detour_km=2.0):
+                           variable_cost_per_order, hub_cost_per_order, max_detour_km=2.0,
+                           additional_cost_per_order=0.0):
     """Plan combined Anchor-to-PVZ routes; recommendations only, no order mutation."""
     if not anchor or anchor.get("lat") is None or anchor.get("lon") is None:
         raise ValueError("Для Anchor не заданы координаты.")
@@ -125,6 +126,7 @@ def plan_multi_stop_routes(anchor, stops, max_orders, max_volume_l, trip_cost,
     trip_cost = max(0.0, float(trip_cost))
     variable_cost_per_order = max(0.0, float(variable_cost_per_order))
     hub_cost_per_order = max(0.0, float(hub_cost_per_order))
+    additional_cost_per_order = max(0.0, float(additional_cost_per_order))
     anchor_lat, anchor_lon = float(anchor["lat"]), float(anchor["lon"])
     remaining, skipped = [], []
     for stop in stops:
@@ -174,7 +176,7 @@ def plan_multi_stop_routes(anchor, stops, max_orders, max_volume_l, trip_cost,
             remaining.remove(chosen)
             current = chosen
         distance += haversine_km(current["lat"], current["lon"], anchor_lat, anchor_lon)
-        mesh_total = trip_cost + count * variable_cost_per_order
+        mesh_total = trip_cost + count * (variable_cost_per_order + additional_cost_per_order)
         hub_total = count * hub_cost_per_order
         mesh_per_order = mesh_total / count
         decision = "Mesh" if mesh_total < hub_total else "Hub"
