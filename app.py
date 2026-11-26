@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from map_view import render_logistics_map
+from map_view import render_logistics_map, render_multi_stop_route_map
 from engine import replenishment_qty, plan_multi_stop_routes
 from database import (
     init_db, seed_demo, products_df, inventory_df, points_df, orders_df, local_delivery_demand_df, save_point_coordinates,
@@ -324,6 +324,10 @@ elif page=="Карта логистики":
                 } for r in routes]
                 st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
                 st.caption("Стоимость рейса распределяется по заказам внутри группы. Планировщик не списывает товар и не запускает транспорт.")
+                route_options = {f'Рейс {r["route_no"]}: ' + " → ".join(r["stop_names"]): r for r in routes}
+                chosen_route_label = st.selectbox("Рейс для просмотра на карте", list(route_options), key="multi_stop_map_route")
+                if st.button("Показать комбинированный маршрут на карте", key="show_multi_stop_route"):
+                    render_multi_stop_route_map(anchor_data, [route_options[chosen_route_label]])
             if plan["skipped"]:
                 st.warning("Некоторые точки не включены: нет корректных координат или спрос превышает вместимость одного рейса.")
                 st.dataframe(pd.DataFrame(plan["skipped"]), use_container_width=True, hide_index=True)
@@ -337,8 +341,8 @@ elif page=="Карта логистики":
             default_lat = 56.631364 if pd.isna(chosen["Широта"]) else float(chosen["Широта"])
             default_lon = 47.890917 if pd.isna(chosen["Долгота"]) else float(chosen["Долгота"])
             with st.form("save_point_coordinates_form"):
-                lat_value = st.number_input("Широта", min_value=-90.0, max_value=90.0, value=default_lat, format="%.6f")
-                lon_value = st.number_input("Долгота", min_value=-180.0, max_value=180.0, value=default_lon, format="%.6f")
+                lat_value = st.number_input("Широта", min_value=-90.0, max_value=90.0, value=default_lat, format="%.6f", key=f"coord_lat_{int(chosen['id'])}")
+                lon_value = st.number_input("Долгота", min_value=-180.0, max_value=180.0, value=default_lon, format="%.6f", key=f"coord_lon_{int(chosen['id'])}")
                 if st.form_submit_button("Сохранить координаты"):
                     show_error(lambda: save_point_coordinates(point_labels[chosen_label], lat_value, lon_value))
 
