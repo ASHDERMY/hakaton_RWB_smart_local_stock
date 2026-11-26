@@ -92,7 +92,7 @@ def forecast_financials(
             mesh = {"total_per_order": 0.0}
         hub_total = hub_orders * float(hub_cost_per_order)
         baseline = demand * float(hub_cost_per_order)
-        combined = mesh_total + hub_total
+        combined = mesh_total + hub_total + system_total * (1.0 - share)
         savings = baseline - combined
         cumulative_savings += savings
         rows.append({
