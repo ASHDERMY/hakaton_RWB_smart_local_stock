@@ -145,6 +145,11 @@ def init_db():
             ("max_wait_hours", 5, "часов", "Проектное ограничение", "Максимальное ожидание накопления; не является SLA"),
         ]
         c.executemany("INSERT OR IGNORE INTO settings VALUES(?,?,?,?,?)", defaults)
+        c.execute(
+            """INSERT OR IGNORE INTO sellers(name,category,contact)
+            VALUES(?,?,?)""",
+            ("ООО «ТехноПоставка»", "Электроника и аксессуары", "demo@example.invalid"),
+        )
 
 
 def seed_demo():
@@ -257,6 +262,28 @@ def points_df():
         return pd.read_sql_query(
             "SELECT id,name AS Название,point_type AS Тип,city AS Город,active AS Активен FROM pickup_points ORDER BY id", c
         )
+
+
+def add_pickup_point(name, point_type, city):
+    name = (name or "").strip()
+    city = (city or "").strip()
+    if not name or not city:
+        raise ValueError("Укажите название точки и город.")
+    if point_type not in ("Anchor", "Обычный", "Hub"):
+        raise ValueError("Недопустимый тип точки.")
+    with db() as c:
+        cur = c.execute(
+            "INSERT INTO pickup_points(name,point_type,city,active) VALUES(?,?,?,1)",
+            (name, point_type, city)
+        )
+        point_id = cur.lastrowid
+        if point_type in ("Anchor", "Hub"):
+            c.execute(
+                """INSERT INTO inventory(point_id,product_id,quantity)
+                SELECT ?,id,0 FROM products""",
+                (point_id,)
+            )
+        return point_id
 
 
 def orders_df():
