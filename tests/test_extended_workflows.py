@@ -52,6 +52,18 @@ class ExtendedWorkflowTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             database.receive_supplier_delivery(delivery_id)
 
+    def test_daily_operations_creates_persisted_shift_and_live_snapshot(self):
+        result = database.run_daily_operations(5, False, 2)
+        self.assertEqual(result["created_orders"], 5)
+        self.assertEqual(result["failed_orders"], 0)
+        runs = database.operational_runs_df()
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(int(runs.iloc[0]["Создано заказов"]), 5)
+        snapshot = database.operational_snapshot()
+        self.assertGreaterEqual(snapshot["total_orders"], 5)
+        self.assertEqual(snapshot["today_runs"]["runs_today"], 1)
+        self.assertEqual(snapshot["today_runs"]["simulated_orders"], 5)
+
     def test_route_incident_creates_plan_and_changes_mesh_route_via_hub(self):
         for number in range(1, 81):
             database.create_order(
