@@ -54,6 +54,7 @@ def forecast_financials(
     monthly_system_cost=10000.0,
     growth_pct=0.0,
     months=12,
+    discount_rate_annual_pct=15.0,
 ):
     """Comparable Hub baseline vs Mesh + Hub hybrid forecast, same demand."""
     monthly_orders = max(0, int(monthly_orders))
@@ -105,6 +106,14 @@ def forecast_financials(
         })
 
     last = rows[-1] if rows else {}
+    total_savings = round(sum(r["savings"] for r in rows), 2)
+    total_system_cost = round(sum(r["system_cost"] for r in rows), 2)
+    annual_discount = max(0.0, float(discount_rate_annual_pct)) / 100.0
+    npv = round(sum(
+        r["savings"] / ((1.0 + annual_discount) ** (r["month"] / 12.0))
+        for r in rows
+    ), 2)
+    roi_pct = round(total_savings / total_system_cost * 100.0, 2) if total_system_cost else None
     return {
         "rows": rows,
         "monthly": last,
@@ -112,7 +121,10 @@ def forecast_financials(
         "total_trips": sum(r["trips"] for r in rows),
         "total_baseline": round(sum(r["baseline_hub_cost"] for r in rows), 2),
         "total_combined": round(sum(r["combined_cost"] for r in rows), 2),
-        "total_savings": round(sum(r["savings"] for r in rows), 2),
+        "total_savings": total_savings,
+        "total_system_cost": total_system_cost,
+        "roi_pct": roi_pct,
+        "npv": npv,
         "capacity_per_trip": capacity,
         "effective_batch_target": batch_orders,
     }
