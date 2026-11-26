@@ -882,9 +882,8 @@ elif page=="Финансы":
     st.markdown("#### Прогноз на 12 месяцев")
     monthly_rows = pd.DataFrame(forecast["rows"])
     st.line_chart(monthly_rows.set_index("month")[["cumulative_savings"]])
-    st.dataframe(monthly_rows[["month","orders","mesh_orders","hub_orders","trips","baseline_hub_cost","combined_cost","savings","cumulative_savings"]].rename(columns={
-        "month":"Месяц","orders":"Заказы","mesh_orders":"Mesh","hub_orders":"Hub","trips":"Рейсы",
-        "baseline_hub_cost":"База Hub, ₽","combined_cost":"Mesh + Hub, ₽","savings":"Эффект, ₽",
+    st.dataframe(monthly_rows[["month","orders","mesh_orders","hub_orders","trips","avg_orders_per_trip","baseline_hub_cost","combined_cost","savings","cumulative_savings"]].rename(columns={
+        "month":"Месяц","orders":"Заказы","mesh_orders":"Mesh","hub_orders":"Hub","trips":"Рейсы","avg_orders_per_trip":"Средняя загрузка рейса","baseline_hub_cost":"База Hub, ₽","combined_cost":"Mesh + Hub, ₽","savings":"Эффект, ₽",
         "cumulative_savings":"Накопленный эффект, ₽"
     }),use_container_width=True,hide_index=True)
 
