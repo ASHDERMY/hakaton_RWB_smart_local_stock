@@ -154,6 +154,38 @@ class ExtendedWorkflowTests(unittest.TestCase):
         self.assertAlmostEqual(finance["mesh_trip_cost"], self.settings["local_trip_cost"])
         database.stop_continuous_simulation()
 
+    def test_day_150_prepares_mature_stock_without_overwriting_existing_balances(self):
+        # Start with zero stock in the demo Anchor and Hub.
+        with database.db() as conn:
+            conn.execute("UPDATE inventory SET quantity=0,reserved=0,incoming=0")
+        baseline = database.prepare_mature_simulation()
+        self.assertGreater(baseline["opening_units"], 0)
+        inventory = database.inventory_df()
+        anchor = inventory[inventory["Тип"] == "Anchor"]
+        hub = inventory[inventory["Тип"] == "Hub"]
+        self.assertTrue((anchor["Остаток"] > 0).all())
+        self.assertTrue((hub["Остаток"] > 0).all())
+
+        # A second preparation must not top up or overwrite already prepared stock.
+        before = inventory[["ПВЗ", "SKU", "Остаток"]].sort_values(["ПВЗ", "SKU"]).reset_index(drop=True)
+        second = database.prepare_mature_simulation()
+        after = database.inventory_df()[["ПВЗ", "SKU", "Остаток"]].sort_values(["ПВЗ", "SKU"]).reset_index(drop=True)
+        self.assertEqual(second["opening_units"], 0)
+        self.assertEqual(before.to_dict("records"), after.to_dict("records"))
+
+    def test_continuous_simulation_can_start_at_day_150(self):
+        code = database.start_continuous_simulation(start_day=150)
+        state = database.simulation_control_state()
+        self.assertTrue(state["running"])
+        self.assertEqual(state["shift_code"], code)
+        self.assertEqual(state["start_day"], 150)
+        self.assertEqual(state["tick_no"], 0)
+        database.stop_continuous_simulation()
+
+    def test_continuous_simulation_rejects_unsupported_start_day(self):
+        with self.assertRaises(ValueError):
+            database.start_continuous_simulation(start_day=42)
+
     def test_replenishment_does_not_duplicate_hub_to_anchor_transport(self):
         with database.db() as conn:
             conn.execute("UPDATE inventory SET quantity=0,reserved=0 WHERE point_id=1 AND product_id=1")
