@@ -161,6 +161,23 @@ def init_db():
             notes TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS simulation_history_runs(
+            id INTEGER PRIMARY KEY, run_code TEXT NOT NULL UNIQUE,
+            day_count INTEGER NOT NULL, orders_count INTEGER NOT NULL,
+            mesh_orders INTEGER NOT NULL, hub_orders INTEGER NOT NULL,
+            mesh_trips INTEGER NOT NULL, baseline_cost REAL NOT NULL,
+            operating_cost REAL NOT NULL, system_cost REAL NOT NULL,
+            total_cost REAL NOT NULL, net_effect REAL NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS simulation_history_days(
+            day_no INTEGER PRIMARY KEY, order_count INTEGER NOT NULL,
+            mesh_orders INTEGER NOT NULL, hub_orders INTEGER NOT NULL,
+            mesh_trips INTEGER NOT NULL, baseline_cost REAL NOT NULL,
+            operating_cost REAL NOT NULL, system_cost REAL NOT NULL,
+            total_cost REAL NOT NULL, net_effect REAL NOT NULL,
+            cumulative_effect REAL NOT NULL, simulated_date TEXT NOT NULL
+        );
         """)
         # Миграции для SQLite-баз, созданных предыдущими версиями MVP.
         _add_column(c, "pickup_points", "active INTEGER NOT NULL DEFAULT 1")
@@ -1367,47 +1384,187 @@ def simulation_state():
 
 
 def prepare_mature_simulation():
-    """Create a transparent day-150 demo baseline without replaying 149 days."""
-    # If the workspace has no catalogue/network yet, load the built-in demo entities.
+    """Seed a reproducible 150-day, 6,000-order history with a consistent stock ledger."""
+    from datetime import datetime, timedelta
+
+    with db() as c:
+        existing = c.execute(
+            "SELECT * FROM simulation_history_runs WHERE run_code='H150-HISTORY'"
+        ).fetchone()
+        if existing:
+            return dict(existing)
+
     products = products_df()
     points = points_df()
-    if products.empty or not (points["Тип"] == "Anchor").any() or not (points["Тип"] == "Hub").any():
+    if products.empty or not (points["Тип"] == "Hub").any():
         seed_demo()
         products = products_df()
         points = points_df()
     if products.empty:
         raise ValueError("Нет товаров для симуляции. Добавьте товары или загрузите демоданные.")
-    anchors = points[(points["Тип"] == "Anchor") & (points["Активен"] == 1)]
-    hubs = points[(points["Тип"] == "Hub") & (points["Активен"] == 1)]
-    if anchors.empty or hubs.empty:
-        raise ValueError("Для зрелой сети нужны хотя бы один активный Anchor и один Hub.")
 
-    created_units = 0
+    hubs = points[(points["Тип"] == "Hub") & (points["Активен"] == 1)]
+    destinations = points[(points["Тип"] == "Обычный") & (points["Активен"] == 1)]
+    if hubs.empty or destinations.empty:
+        raise ValueError("Для истории нужны активный Hub и хотя бы один обычный ПВЗ.")
+
+    hub_id = int(hubs.iloc[0]["id"])
+    destination_ids = [int(v) for v in destinations["id"].tolist()]
+    product_ids = [int(v) for v in products["id"].tolist()]
+    if not product_ids or not destination_ids:
+        raise ValueError("Не удалось определить товары или ПВЗ для исторической симуляции.")
+
+    orders_per_day = 40
+    day_count = 150
+    total_orders = orders_per_day * day_count
+    monthly_orders = 1200
+    settings = settings_dict()
+    hub_tariff = float(settings["hub_cost_per_order"]["value"])
+    monthly_system_cost = float(settings.get("monthly_system_cost", {}).get("value", 10000))
+    system_total = monthly_system_cost * (day_count / 30.0)
+    start_date = datetime.now() - timedelta(days=day_count - 1)
+
+    order_rows = []
+    movement_rows = []
+    daily_rows = []
+    product_counts = {pid: 0 for pid in product_ids}
+    destination_counts = {pid: 0 for pid in destination_ids}
+    cumulative_effect = 0.0
+
+    for day in range(1, day_count + 1):
+        simulated_date = start_date + timedelta(days=day - 1)
+        daily_orders = []
+        for seq in range(orders_per_day):
+            product_id = product_ids[(day * orders_per_day + seq) % len(product_ids)]
+            destination_id = destination_ids[(day * orders_per_day + seq) % len(destination_ids)]
+            product_counts[product_id] += 1
+            destination_counts[destination_id] += 1
+            code = f"H150-D{day:03d}-{seq+1:03d}"
+            created_at = (simulated_date.replace(hour=10, minute=0, second=0)
+                          + timedelta(minutes=seq * 12)).strftime("%Y-%m-%d %H:%M:%S")
+            order_rows.append((code, product_id, destination_id, 1, "Выдан", "Hub",
+                               created_at, hub_id, hub_tariff, created_at, None))
+            daily_orders.append(code)
+            movement_rows.extend([
+                (hub_id, product_id, "dispatch", 1, code, "Историческая модель: отправка Hub → ПВЗ"),
+                (destination_id, product_id, "arrival", 1, code, "Историческая модель: прибытие в ПВЗ"),
+                (destination_id, product_id, "issue", 1, code, "Историческая модель: выдача покупателю"),
+            ])
+
+        daily_baseline = orders_per_day * hub_tariff
+        daily_operating = daily_baseline
+        daily_system = system_total / day_count
+        daily_total = daily_operating + daily_system
+        daily_effect = daily_baseline - daily_total
+        cumulative_effect += daily_effect
+        daily_rows.append((
+            day, orders_per_day, 0, orders_per_day, 0, daily_baseline,
+            daily_operating, daily_system, daily_total, daily_effect,
+            cumulative_effect, simulated_date.strftime("%Y-%m-%d"),
+        ))
+
     with db() as c:
-        for _, point in pd.concat([anchors, hubs]).iterrows():
-            point_id = int(point["id"])
-            is_anchor = point["Тип"] == "Anchor"
-            for _, product in products.iterrows():
-                product_id = int(product["id"])
-                target = 45 if is_anchor else 180
+        seller = c.execute("SELECT id FROM sellers WHERE active=1 ORDER BY id LIMIT 1").fetchone()
+        if not seller:
+            c.execute(
+                "INSERT OR IGNORE INTO sellers(name,category,contact) VALUES(?,?,?)",
+                ("ООО «ТехноПоставка»", "Демонстрационный продавец", "demo@example.invalid"),
+            )
+            seller = c.execute("SELECT id FROM sellers WHERE active=1 ORDER BY id LIMIT 1").fetchone()
+
+        # Modelled seller receipts replenish Hub for all historical orders.
+        for product_id, quantity in product_counts.items():
+            reference = f"H150-SUP-{product_id}"
+            cur = c.execute(
+                """INSERT INTO supplier_deliveries(
+                    seller_id,product_id,hub_point_id,quantity,status,reference,created_at,received_at
+                ) VALUES(?,?,?,?,?,?,?,?)""",
+                (int(seller["id"]), product_id, hub_id, quantity, "Принята",
+                 reference, start_date.strftime("%Y-%m-%d %H:%M:%S"),
+                 start_date.strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            c.execute(
+                "INSERT OR IGNORE INTO inventory(point_id,product_id,quantity,reserved,incoming) VALUES(?,?,0,0,0)",
+                (hub_id, product_id),
+            )
+            c.execute("UPDATE inventory SET quantity=quantity+? WHERE point_id=? AND product_id=?",
+                      (quantity, hub_id, product_id))
+            c.execute(
+                """INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note,created_at)
+                VALUES(?,?,?,?,?,?,?)""",
+                (hub_id, product_id, "supplier_receipt", quantity, reference,
+                 "Историческая модель: поставка продавца на Hub", start_date.strftime("%Y-%m-%d %H:%M:%S")),
+            )
+
+        # Consume the supplied Hub stock and preserve the exact per-order movement ledger.
+        for product_id, quantity in product_counts.items():
+            cur = c.execute(
+                "UPDATE inventory SET quantity=quantity-? WHERE point_id=? AND product_id=? AND quantity>=?",
+                (quantity, hub_id, product_id, quantity),
+            )
+            if cur.rowcount != 1:
+                raise ValueError("Не удалось согласовать исторический остаток Hub с заказами.")
+
+        for destination_id in destination_ids:
+            for product_id in product_ids:
                 c.execute(
-                    """INSERT OR IGNORE INTO inventory(point_id,product_id,quantity,reserved,incoming)
-                       VALUES(?,?,0,0,0)""",
-                    (point_id, product_id),
+                    "INSERT OR IGNORE INTO inventory(point_id,product_id,quantity,reserved,incoming) VALUES(?,?,0,0,0)",
+                    (destination_id, product_id),
                 )
-                row = c.execute(
-                    """SELECT quantity,reserved,incoming FROM inventory
-                       WHERE point_id=? AND product_id=?""",
-                    (point_id, product_id),
-                ).fetchone()
-                if row and int(row["quantity"]) == 0 and int(row["reserved"]) == 0 and int(row["incoming"]) == 0:
-                    c.execute(
-                        "UPDATE inventory SET quantity=? WHERE point_id=? AND product_id=?",
-                        (target, point_id, product_id),
-                    )
-                    created_units += target
-    return {"products": len(products), "anchors": len(anchors), "hubs": len(hubs),
-            "opening_units": created_units}
+
+        c.executemany(
+            """INSERT INTO orders(
+                order_code,product_id,destination_point_id,quantity,status,route,created_at,
+                source_point_id,estimated_cost,updated_at,batch_id
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            order_rows,
+        )
+        c.executemany(
+            """INSERT INTO stock_movements(point_id,product_id,movement_type,quantity,reference,note,created_at)
+            VALUES(?,?,?,?,?,?,?)""",
+            [(pid, sku, kind, qty, ref, note, ref.split("-")[1] if False else start_date.strftime("%Y-%m-%d %H:%M:%S"))
+             for pid, sku, kind, qty, ref, note in movement_rows],
+        )
+        c.executemany(
+            """INSERT INTO simulation_history_days(
+                day_no,order_count,mesh_orders,hub_orders,mesh_trips,baseline_cost,
+                operating_cost,system_cost,total_cost,net_effect,cumulative_effect,simulated_date
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            daily_rows,
+        )
+        c.execute(
+            """INSERT INTO simulation_history_runs(
+                run_code,day_count,orders_count,mesh_orders,hub_orders,mesh_trips,
+                baseline_cost,operating_cost,system_cost,total_cost,net_effect
+            ) VALUES('H150-HISTORY',?,?,?,?,?,?,?,?,?,?)""",
+            (day_count, total_orders, 0, total_orders, 0,
+             total_orders * hub_tariff, total_orders * hub_tariff, system_total,
+             total_orders * hub_tariff + system_total, -system_total),
+        )
+
+    return {
+        "run_code": "H150-HISTORY", "day_count": day_count, "orders_count": total_orders,
+        "mesh_orders": 0, "hub_orders": total_orders, "mesh_trips": 0,
+        "baseline_cost": total_orders * hub_tariff,
+        "operating_cost": total_orders * hub_tariff, "system_cost": system_total,
+        "total_cost": total_orders * hub_tariff + system_total, "net_effect": -system_total,
+    }
+
+
+def mature_history_summary():
+    with db() as c:
+        row = c.execute("SELECT * FROM simulation_history_runs WHERE run_code='H150-HISTORY'").fetchone()
+        return dict(row) if row else None
+
+
+def mature_history_daily_df():
+    with db() as c:
+        return pd.read_sql_query(
+            "SELECT day_no AS День,order_count AS Заказы,mesh_orders AS Mesh,hub_orders AS Hub,"
+            "mesh_trips AS 'Рейсы Mesh',baseline_cost AS 'База Hub, ₽',total_cost AS 'Фактическая модель, ₽',"
+            "net_effect AS 'Эффект, ₽',cumulative_effect AS 'Накопленный эффект, ₽',simulated_date AS Дата "
+            "FROM simulation_history_days ORDER BY day_no", c
+        )
 
 
 def start_continuous_simulation(start_day=1):
